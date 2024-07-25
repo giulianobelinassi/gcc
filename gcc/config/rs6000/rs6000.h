@@ -2437,10 +2437,12 @@ typedef struct GTY(()) machine_function
   bool lr_is_wrapped_separately;
   bool toc_is_wrapped_separately;
   bool mma_return_type_error;
-  /* Indicate global entry is emitted, only useful when the function requires
-     global entry.  It helps to control the patchable area before and after
-     local entry.  */
-  bool global_entry_emitted;
+  /* With ELFv2 ABI dual entry points being adopted, generic framework
+     targetm.asm_out.print_patchable_function_entry would generate "after"
+     NOPs before local entry, it is wrong.  This flag is to stop it from
+     printing patch area before local entry, it is only useful when the
+     function requires dual entry points.  */
+  bool stop_patch_area_print;
 } machine_function;
 #endif
 

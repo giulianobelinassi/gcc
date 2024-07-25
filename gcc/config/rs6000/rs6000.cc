@@ -14936,12 +14936,14 @@ rs6000_print_patchable_function_entry (FILE *file,
 				       bool record_p)
 {
   bool global_entry_needed_p = rs6000_global_entry_point_prologue_needed_p ();
-  /* For a function which needs global entry point, we will emit the
-     patchable area before and after local entry point under the control of
-     cfun->machine->global_entry_emitted, see the handling in function
+  /* For a function which needs global entry point, we will only emit the
+     patchable area after local entry point under the control of
+     !cfun->machine->stop_patch_area_print, see the handling in functions
      rs6000_output_function_prologue.  */
-  if (!global_entry_needed_p || cfun->machine->global_entry_emitted)
+  if (!cfun->machine->stop_patch_area_print)
     default_print_patchable_function_entry (file, patch_area_size, record_p);
+  else
+    gcc_assert (global_entry_needed_p);
 }
 
 enum rtx_code
@@ -21115,6 +21117,11 @@ rs6000_elf_declare_function_name (FILE *file, const char *name, tree decl)
       fprintf (file, "\t.previous\n");
     }
   ASM_OUTPUT_LABEL (file, name);
+  /* At this time, the "before" NOPs have been already emitted,
+     let's stop generic code from printing the "after" NOPs and
+     emit just after local entry later.  */
+  if (rs6000_global_entry_point_prologue_needed_p ())
+    cfun->machine->stop_patch_area_print = true;
 }
 
 static void rs6000_elf_file_end (void) ATTRIBUTE_UNUSED;
