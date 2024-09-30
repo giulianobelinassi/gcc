@@ -688,6 +688,81 @@ symbol_table::remove_unreachable_nodes (FILE *file)
   return changed;
 }
 
+bool
+symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FILE *file)
+{
+  bool changed = false;
+
+  if (nodes.length() == 0)
+    return false;
+
+  for (unsigned i = 0; i < nodes.length(); i++) {
+      auto_vec<symtab_node *> stack;
+      symtab_node *node = nodes[i];
+
+      stack.safe_push(node);
+
+      while (!stack.is_empty())
+	{
+	  node = stack.pop();
+	  if (node->aux != NULL)
+	    {
+	      continue;
+	    }
+
+	  if (cgraph_node *cnode = dyn_cast<cgraph_node *>(node))
+	    {
+	      if (cnode->inlined_to)
+		{
+		  printf("node %s inlined_to %s\n", cnode->name (),
+			 cnode->inlined_to->name ());
+		  stack.safe_push(cnode->inlined_to);
+		}
+
+	      cgraph_edge *edge;
+	      for (edge = cnode->callees; edge; edge = edge->next_callee)
+		{
+		  cgraph_node *callee = edge->callee;
+		  stack.safe_push(callee);
+
+		  printf ("name: %s\n", callee->dump_name ());
+		}
+	    
+	    }
+
+	  struct ipa_ref *ref = NULL;
+	  for (unsigned i = 0; node->iterate_reference (i, ref); ++i)
+	    {
+	      printf ("ipa_ref reference name: %s\n", ref->referred->dump_name ());
+	      stack.safe_push(ref->referred);
+	    }
+
+	  node->aux = (void *) 1;
+
+	}
+
+  }
+
+  symtab_node *node;
+  symtab_node *next = NULL;
+  for (node = first_defined_symbol (); node; node = next)
+    {
+      next = node->next;
+      if (!node->aux)
+	{
+	  printf("removing: %s\n", node->dump_name ());
+	  node->remove();
+	  changed = true;
+	}
+      else
+	{
+	  node->aux = NULL;
+	}
+    }
+
+  return changed;
+}
+
 /* Process references to VNODE and set flags WRITTEN, ADDRESS_TAKEN, READ
    as needed, also clear EXPLICIT_REFS if the references to given variable
    do not need to be explicit.  */

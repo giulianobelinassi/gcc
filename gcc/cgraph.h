@@ -479,6 +479,15 @@ public:
      Return NULL if there's no such node.  */
   static symtab_node *get_for_asmname (const_tree asmname);
 
+  /* Get symtab node by order.  */
+  static symtab_node *find_by_order (int order);
+
+  /* Get symtab_node by its name.  */
+  static symtab_node *find_by_name (const char *);
+
+  /* Get symtab_node by its ASM name.  */
+  static symtab_node *find_by_asm_name (const char *);
+
   /* Check symbol table for callees of IFUNC resolvers.  */
   static void check_ifunc_callee_symtab_nodes (void);
 
@@ -2282,6 +2291,9 @@ public:
 
   /* Perform reachability analysis and reclaim all unreachable nodes.  */
   bool remove_unreachable_nodes (FILE *file);
+
+  /* Remove any node not reachable from input set.  */
+  bool remove_unreachable_nodes_from (const vec<symtab_node *> &nodes, FILE *file);
 
   /* Optimization of function bodies might've rendered some variables as
      unnecessary so we want to avoid these from being compiled.  Re-do

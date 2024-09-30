@@ -2197,6 +2197,40 @@ output_in_order (void)
   symtab->clear_asm_symbols ();
 }
 
+static auto_vec<const char *>
+retrieve_symbols_to_extract(void)
+{
+  auto_vec<const char *> ret;
+  const char *tok;
+
+  tok = strtok((char*) symbols_to_extract, ",");
+  while (tok != nullptr) {
+    ret.safe_push(tok);
+    tok = strtok(nullptr, ",");
+  }
+
+  return ret;
+}
+
+static bool livepatch_stuff(FILE *file = stdout)
+{
+  auto_vec<const char *> req_symbols = retrieve_symbols_to_extract();
+  auto_vec<symtab_node *> s;
+
+  symtab_node *node;
+  FOR_EACH_SYMBOL(node)
+    {
+      for (unsigned i = 0; i < req_symbols.length(); i++) {
+	if (!strcmp (node->name (), req_symbols[i]))
+	  s.safe_push(node);
+      }
+    }
+
+  symtab->remove_unreachable_nodes_from (s, file);
+
+  return true;
+}
+
 static void
 ipa_passes (void)
 {
@@ -2207,6 +2241,7 @@ ipa_passes (void)
   gimple_register_cfg_hooks ();
   bitmap_obstack_initialize (NULL);
 
+  livepatch_stuff();
   invoke_plugin_callbacks (PLUGIN_ALL_IPA_PASSES_START, NULL);
 
   if (!in_lto_p)

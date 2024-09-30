@@ -3859,4 +3859,8 @@ fipa-ra
 Common Var(flag_ipa_ra) Optimization
 Use caller save register across calls if possible.
 
+fextract-symbols=
+Common Joined Var(symbols_to_extract)
+-fextract-symbols=<symbol1,symbol2,...> Symbols to extract from current compilation unit.
+
 ; This comment is to ensure we retain the blank line above.
