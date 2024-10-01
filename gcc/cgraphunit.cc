@@ -2197,31 +2197,39 @@ output_in_order (void)
   symtab->clear_asm_symbols ();
 }
 
-static auto_vec<const char *>
-retrieve_symbols_to_extract(void)
+auto_vec<const char *> gsymbols_to_extract;
+bool gsymbols_to_extract_init = false;
+
+void
+init_symbols_to_extract(void)
 {
-  auto_vec<const char *> ret;
+  if (gsymbols_to_extract_init == true)
+    return;
+
+  unsigned size = strlen(symbols_to_extract) + 1;
+  char buf[size];
+  memcpy(buf, symbols_to_extract, size);
+
   const char *tok;
 
-  tok = strtok((char*) symbols_to_extract, ",");
+  tok = strtok((char*) buf, ",");
   while (tok != nullptr) {
-    ret.safe_push(tok);
+    gsymbols_to_extract.safe_push(xstrdup(tok));
     tok = strtok(nullptr, ",");
   }
 
-  return ret;
+  gsymbols_to_extract_init = true;
 }
 
 static bool livepatch_stuff(FILE *file = stdout)
 {
-  auto_vec<const char *> req_symbols = retrieve_symbols_to_extract();
   auto_vec<symtab_node *> s;
 
   symtab_node *node;
   FOR_EACH_SYMBOL(node)
     {
-      for (unsigned i = 0; i < req_symbols.length(); i++) {
-	if (!strcmp (node->name (), req_symbols[i]))
+      for (unsigned i = 0; i < gsymbols_to_extract.length(); i++) {
+	if (!strcmp (node->name (), gsymbols_to_extract[i]))
 	  s.safe_push(node);
       }
     }
@@ -2236,12 +2244,13 @@ ipa_passes (void)
 {
   gcc::pass_manager *passes = g->get_passes ();
 
+  init_symbols_to_extract();
+
   set_cfun (NULL);
   current_function_decl = NULL;
   gimple_register_cfg_hooks ();
   bitmap_obstack_initialize (NULL);
 
-  livepatch_stuff();
   invoke_plugin_callbacks (PLUGIN_ALL_IPA_PASSES_START, NULL);
 
   if (!in_lto_p)
@@ -2250,6 +2259,8 @@ ipa_passes (void)
       if (seen_error ())
 	return;
     }
+
+  livepatch_stuff();
 
   /* This extra symtab_remove_unreachable_nodes pass tends to catch some
      devirtualization and other changes where removal iterate.  */

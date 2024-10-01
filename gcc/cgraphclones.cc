@@ -307,11 +307,27 @@ cgraph_node::expand_all_artificial_thunks ()
       e = e->next_caller;
 }
 
+extern auto_vec<const char *> gsymbols_to_extract;
+
 void
 dump_callgraph_transformation (const cgraph_node *original,
 			       const cgraph_node *clone,
 			       const char *suffix)
 {
+
+  for (unsigned i = 0; i < gsymbols_to_extract.length(); i++)
+    {
+      if (strcmp(gsymbols_to_extract[i], original->name ()) == 0)
+	{
+	  const char *inl = clone->name ();
+	  printf("Adding to set because of inline: %s\n", inl);
+
+	  gsymbols_to_extract.safe_push(xstrdup(inl));
+	  break;
+	}
+	
+    }
+
   if (symtab->ipa_clones_dump_file)
     {
       fprintf (symtab->ipa_clones_dump_file,
