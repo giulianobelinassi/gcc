@@ -4242,7 +4242,7 @@ varpool_node::externalize (void)
 
   /* Inspect it.  */
   printf ("About to externalize: %s\n", var_name);
-  debug_tree (decl);
+  //debug_tree (decl);
 
   tree var_type = TREE_TYPE (decl);
   tree pointer_type = build_pointer_type (var_type);
@@ -4266,13 +4266,10 @@ varpool_node::externalize (void)
   /* Inspect the variable we created.  */
   printf("Created externalized tree variable: %s\n", IDENTIFIER_POINTER (DECL_NAME
 								       (pointer_var)));
-  debug_tree (pointer_var);
-
-  /* 0 constant as tree object.  */
-  tree _0 = build_zero_cst (pointer_type);
+  //debug_tree (pointer_var);
 
   /* Create a deference of the new pointer variable.  */
-  tree pointer_deference = build2 (MEM_REF, pointer_type, pointer_var, _0);
+  tree pointer_deference = build1 (INDIRECT_REF, var_type, pointer_var);
 
   /* Rewire references to the old variable to the new one.  */
   struct ipa_ref *ref = NULL;
@@ -4293,13 +4290,10 @@ varpool_node::externalize (void)
 	      tree use = gimple_mops->op[0];
 
 	      /* Inspect it.  */
-	      debug_tree (use);
+	      //debug_tree (use);
 
 	      /* Basic block containing the stmt.  */
 	      basic_block bb = gimple_bb (gimple_mops);
-
-	      /* GIMPLE sequence (linked list??) modeling Stmt* chain.  */
-	      gimple_seq *seq = bb_seq_addr (bb);
 
 	      /* Create new assing statement, hence push a new gimplifier
 	         global context.  */
