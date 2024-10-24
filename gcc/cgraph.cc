@@ -4259,6 +4259,7 @@ varpool_node::externalize (void)
   /* Mark variable as having its storage space in the current compilation
      unit.  */
   TREE_STATIC (pointer_var) = true;
+  TREE_PUBLIC (pointer_var) = true;
 
   /* Announce the new variable to symtab.  */
   varpool_node::add (pointer_var);
@@ -4307,12 +4308,16 @@ varpool_node::externalize (void)
 
 	      /* Replace the stmts.  */
 	      replace_stmts(ref->stmt, assign_stmt);
+	      ref->stmt = assign_stmt;
 
 	      /* ... and destroy the context.  */
 	      pop_gimplify_context (NULL);
 
 	      /* Inspect the basic block we changed.  */
 	      debug_basic_block (bb);
+
+	      /* Update SSA names.  */
+	      update_ssa (TODO_update_ssa);
 	    }
 
 	  /* Pop function out of the context.   */
