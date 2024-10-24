@@ -2206,6 +2206,9 @@ init_symbols_to_extract(void)
   if (gsymbols_to_extract_init == true)
     return;
 
+  if (symbols_to_extract == NULL || *symbols_to_extract == '\0')
+    return;
+
   unsigned size = strlen(symbols_to_extract) + 1;
   char buf[size];
   memcpy(buf, symbols_to_extract, size);
@@ -2224,17 +2227,31 @@ init_symbols_to_extract(void)
 static bool livepatch_stuff(FILE *file = stdout)
 {
   auto_vec<symtab_node *> s;
+  auto_vec<symtab_node *> e;
 
   symtab_node *node;
   FOR_EACH_SYMBOL(node)
     {
-      for (unsigned i = 0; i < gsymbols_to_extract.length(); i++) {
-	if (!strcmp (node->name (), gsymbols_to_extract[i]))
-	  s.safe_push(node);
-      }
-    }
+      for (unsigned i = 0; i < gsymbols_to_extract.length(); i++)
+	{
+	  if (!strcmp (node->name (), gsymbols_to_extract[i]))
+	    s.safe_push(node);
+	}
 
+      /* Hardcode the variable we want to externalize for now.  */
+      if (!strcmp (node->name (), "gVar"))
+	{
+	  e.safe_push(node);
+	}
+    }
+  /* Closure.  */
   symtab->remove_unreachable_nodes_from (s, file);
+
+  /* Externalization.  */
+  symtab->externalize_variables(e, file);
+
+  /* Closure again.  */
+  //symtab->remove_unreachable_nodes_from (s, file);
 
   return true;
 }

@@ -24,6 +24,8 @@ along with GCC; see the file COPYING3.  If not see
     optimization.  It represents a multi-graph where nodes are functions
     (symbols within symbol table) and edges are call sites. */
 
+#include <assert.h>
+
 #include "config.h"
 #include "system.h"
 #include "coretypes.h"
@@ -4192,6 +4194,139 @@ cgraph_node::call_for_symbol_and_aliases_1 (bool (*callback) (cgraph_node *,
 	  return true;
     }
   return false;
+}
+
+static void
+debug_basic_block (basic_block bb)
+{
+  printf("--- begin gimple bb dump ---\n");
+  gimple_stmt_iterator gsi;
+  for (gsi = gsi_start_bb (bb); !gsi_end_p (gsi); gsi_next (&gsi))
+    {
+      gimple *stmt = gsi_stmt (gsi);
+      debug_gimple_stmt (stmt);
+    }
+  printf("--- end   gimple bb dump ---\n");
+}
+
+/* Replace gimple STMT `from` with the one provided by `with`.  */
+static bool
+replace_stmts(gimple *from, gimple *with)
+{
+  bool ret = false;
+  basic_block bb = gimple_bb (from);
+
+  gimple_stmt_iterator gsi;
+  for (gsi = gsi_start_bb (bb); !gsi_end_p (gsi); gsi_next (&gsi))
+    {
+      gimple *stmt = gsi_stmt (gsi);
+      if (stmt == from)
+	{
+	  /* Stmt found.  Update it.  */
+	  ret = gsi_replace (&gsi, with, false);
+	  break;
+	}
+    }
+
+  return ret;
+}
+
+/* Externalize variable.  On livepatch context, this means redeclaring a
+   variable `TYPE var;` as `TYPE *klpe_var;`.  */
+varpool_node *
+varpool_node::externalize (void)
+{
+  assert(TREE_CODE (decl) == VAR_DECL);
+
+  const char *var_name = IDENTIFIER_POINTER (DECL_NAME (decl));
+
+  /* Inspect it.  */
+  printf ("About to externalize: %s\n", var_name);
+  debug_tree (decl);
+
+  tree var_type = TREE_TYPE (decl);
+  tree pointer_type = build_pointer_type (var_type);
+
+  /* Craft a name to the new variable.  */
+  char name[64];
+  memcpy(name, "klp_", 4);
+  strcpy(name + 4, var_name);
+
+  /* Create variable with type matching a pointer to the old variable.  */
+  tree pointer_var = build_decl (DECL_SOURCE_LOCATION (decl), VAR_DECL,
+				 get_identifier (name), pointer_type);
+
+  /* Mark variable as having its storage space in the current compilation
+     unit.  */
+  TREE_STATIC (pointer_var) = true;
+
+  /* Announce the new variable to symtab.  */
+  varpool_node::add (pointer_var);
+
+  /* Inspect the variable we created.  */
+  printf("Created externalized tree variable: %s\n", IDENTIFIER_POINTER (DECL_NAME
+								       (pointer_var)));
+  debug_tree (pointer_var);
+
+  /* 0 constant as tree object.  */
+  tree _0 = build_zero_cst (pointer_type);
+
+  /* Create a deference of the new pointer variable.  */
+  tree pointer_deference = build2 (MEM_REF, pointer_type, pointer_var, _0);
+
+  /* Rewire references to the old variable to the new one.  */
+  struct ipa_ref *ref = NULL;
+  for (unsigned i = 0; iterate_referring (i, ref); ++i)
+    {
+      if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referring))
+	{
+	  /* Push referring function to global context.  */
+	  push_cfun (cnode->get_fun ());
+
+	  /* Look at the GIMPLE statement that generated the reference, we need
+	     to rewrite it to reference our new (pointer) variable.  */
+
+	  if (gimple_statement_with_memory_ops *gimple_mops =
+	      dyn_cast<gimple_statement_with_memory_ops *> (ref->stmt))
+	    {
+	      /* tree object that generated the reference.  */
+	      tree use = gimple_mops->op[0];
+
+	      /* Inspect it.  */
+	      debug_tree (use);
+
+	      /* Basic block containing the stmt.  */
+	      basic_block bb = gimple_bb (gimple_mops);
+
+	      /* GIMPLE sequence (linked list??) modeling Stmt* chain.  */
+	      gimple_seq *seq = bb_seq_addr (bb);
+
+	      /* Create new assing statement, hence push a new gimplifier
+	         global context.  */
+	      push_gimplify_context ();
+
+	      /* Create a gimple_seq to hold our new stmt.  */
+	      gimple_seq new_seq = NULL;
+
+	      /* ... create the stmt and append it to a new gimple sequence.  */
+	      gimple *assign_stmt = gimplify_assign (use, pointer_deference, &new_seq);
+
+	      /* Replace the stmts.  */
+	      replace_stmts(ref->stmt, assign_stmt);
+
+	      /* ... and destroy the context.  */
+	      pop_gimplify_context (NULL);
+
+	      /* Inspect the basic block we changed.  */
+	      debug_basic_block (bb);
+	    }
+
+	  /* Pop function out of the context.   */
+	  pop_cfun ();
+	}
+    }
+
+  return varpool_node::get (pointer_var);
 }
 
 /* Return true if NODE has thunk.  */

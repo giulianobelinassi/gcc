@@ -41,9 +41,13 @@ along with GCC; see the file COPYING3.  If not see
 #include "debug.h"
 #include "stringpool.h"
 #include "attribs.h"
+#include "assert.h"
+#include "tree-cfg.h"
+#include "print-tree.h"
+#include "gimple-pretty-print.h"
+#include "gimple-iterator.h"
 
 /* Return true when NODE has ADDR reference.  */
-
 static bool
 has_addr_references_p (struct cgraph_node *node,
 		       void *)
@@ -689,15 +693,35 @@ symbol_table::remove_unreachable_nodes (FILE *file)
 }
 
 bool
+symbol_table::externalize_variables (const vec<symtab_node *> &nodes, FILE *file)
+{
+  bool ret = false;
+  for (unsigned i = 0; i < nodes.length(); ++i)
+    {
+      if (varpool_node *vnode = dyn_cast<varpool_node *>(nodes[i]))
+	{
+	  vnode->externalize ();
+	  ret = true;
+	}
+    }
+
+  return ret;
+}
+
+bool
 symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FILE *file)
 {
   bool changed = false;
 
+  /* Do nothing if no extraction was request.  */
   if (nodes.length() == 0)
     return false;
 
-  for (unsigned i = 0; i < nodes.length(); i++) {
-      auto_vec<symtab_node *> stack;
+  /* Do a DFS for each node to see which nodes can we reach.  This is our
+   * closure.  */
+  for (unsigned i = 0; i < nodes.length(); i++)
+    {
+      auto_vec<symtab_node *> stack; // DFS stack.
       symtab_node *node = nodes[i];
 
       stack.safe_push(node);
@@ -707,6 +731,7 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	  node = stack.pop();
 	  if (node->aux != NULL)
 	    {
+	      /* Already analyzed.  */
 	      continue;
 	    }
 
@@ -714,6 +739,7 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	    {
 	      if (cnode->inlined_to)
 		{
+		  /* Seems to only be used during certain passes.  */
 		  printf("node %s inlined_to %s\n", cnode->name (),
 			 cnode->inlined_to->name ());
 		  stack.safe_push(cnode->inlined_to);
@@ -722,6 +748,7 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	      cgraph_edge *edge;
 	      for (edge = cnode->callees; edge; edge = edge->next_callee)
 		{
+		  /* Forward into each edge.  */
 		  cgraph_node *callee = edge->callee;
 		  stack.safe_push(callee);
 
@@ -733,16 +760,15 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	  struct ipa_ref *ref = NULL;
 	  for (unsigned i = 0; node->iterate_reference (i, ref); ++i)
 	    {
-	      printf ("ipa_ref reference name: %s\n", ref->referred->dump_name ());
+	      /* References to variables.  */
 	      stack.safe_push(ref->referred);
 	    }
 
 	  node->aux = (void *) 1;
-
 	}
+    }
 
-  }
-
+  /* Remove unreachable nodes.  */
   symtab_node *node;
   symtab_node *next = NULL;
   for (node = first_defined_symbol (); node; node = next)

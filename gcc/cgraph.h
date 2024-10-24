@@ -2081,6 +2081,10 @@ struct GTY((tag ("SYMTAB_VARIABLE"))) varpool_node : public symtab_node
      if all direct calls are eliminated.  */
   inline bool can_remove_if_no_refs_p (void);
 
+  /* Externalize variable.  On livepatch context, this means redeclaring a
+     variable `TYPE var;` as `TYPE *klpe_var;`.  */
+  varpool_node *externalize (void);
+
   /* Add the variable DECL to the varpool.
      Unlike finalize_decl function is intended to be used
      by middle end and allows insertion of new variable at arbitrary point
@@ -2288,6 +2292,9 @@ public:
     asmnodes = NULL;
     asm_last_node = NULL;
   }
+
+  /* Externalize variables.  */
+  bool externalize_variables (const vec<symtab_node *> &nodes, FILE *file);
 
   /* Perform reachability analysis and reclaim all unreachable nodes.  */
   bool remove_unreachable_nodes (FILE *file);
