@@ -4209,28 +4209,6 @@ debug_basic_block (basic_block bb)
   printf("--- end   gimple bb dump ---\n");
 }
 
-/* Replace gimple STMT `from` with the one provided by `with`.  */
-static bool
-replace_stmts(gimple *from, gimple *with)
-{
-  bool ret = false;
-  basic_block bb = gimple_bb (from);
-
-  gimple_stmt_iterator gsi;
-  for (gsi = gsi_start_bb (bb); !gsi_end_p (gsi); gsi_next (&gsi))
-    {
-      gimple *stmt = gsi_stmt (gsi);
-      if (stmt == from)
-	{
-	  /* Stmt found.  Update it.  */
-	  ret = gsi_replace (&gsi, with, false);
-	  break;
-	}
-    }
-
-  return ret;
-}
-
 /* Externalize variable.  On livepatch context, this means redeclaring a
    variable `TYPE var;` as `TYPE *klpe_var;`.  */
 varpool_node *
@@ -4307,8 +4285,8 @@ varpool_node::externalize (void)
 	      gimple *assign_stmt = gimplify_assign (use, pointer_deference, &new_seq);
 
 	      /* Replace the stmts.  */
-	      replace_stmts(ref->stmt, assign_stmt);
-	      ref->stmt = assign_stmt;
+	      gimple_stmt_iterator gsi = gsi_for_stmt (ref->stmt);
+	      gsi_replace_with_seq (&gsi, new_seq, false);
 
 	      /* ... and destroy the context.  */
 	      pop_gimplify_context (NULL);
@@ -4325,6 +4303,8 @@ varpool_node::externalize (void)
 	}
     }
 
+  /* remove node.  */
+  remove ();
   return varpool_node::get (pointer_var);
 }
 
