@@ -771,7 +771,7 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
   /* Remove unreachable nodes.  */
   symtab_node *node;
   symtab_node *next = NULL;
-  for (node = first_defined_symbol (); node; node = next)
+  for (node = first_symbol (); node; node = next)
     {
       next = node->next;
       if (!node->aux)
