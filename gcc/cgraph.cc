@@ -71,6 +71,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree-nested.h"
 #include "symtab-thunks.h"
 #include "symtab-clones.h"
+#include "gimple-walk.h"
+#include "tree-ssanames.h"
 
 /* FIXME: Only for PROP_loops, but cgraph shouldn't have to know about this.  */
 #include "tree-pass.h"
@@ -4209,6 +4211,72 @@ debug_basic_block (basic_block bb)
   printf("--- end   gimple bb dump ---\n");
 }
 
+struct new_var_content
+{
+  tree pointer_var;
+  tree pointer_deference;
+};
+
+static bool
+visit_load (gimple *stmt, tree rhs, tree arg, void *data)
+{
+  struct new_var_content *new_var_info = (struct new_var_content *) data;
+  tree pointer_deference = new_var_info->pointer_deference;
+
+  /* tree object that generated the reference.  */
+  tree lhs = gimple_get_lhs (stmt);
+
+  gcc_assert (lhs && "Load of variable without left side?");
+
+  /* Create new assing statement, hence push a new gimplifier
+     global context.  */
+  push_gimplify_context ();
+
+  /* Create a gimple_seq to hold our new stmt.  */
+  gimple_seq new_seq = NULL;
+
+  /* ... create the stmt and append it to a new gimple sequence.  */
+  gimple *assign_stmt = gimplify_assign (lhs, pointer_deference, &new_seq);
+
+  /* Replace the stmts.  */
+  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
+  gsi_replace_with_seq (&gsi, new_seq, false);
+  /* ... and destroy the context.  */
+  pop_gimplify_context (NULL);
+
+  /* Update SSA names.  */
+  update_ssa (TODO_update_ssa);
+
+  return true;
+}
+
+static bool
+visit_store (gimple *stmt, tree lhs, tree arg, void *data)
+{
+  struct new_var_content *new_var_info = (struct new_var_content *) data;
+  tree pointer_var = new_var_info->pointer_var;
+
+  /* Create temporary variable. */
+  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
+
+  /* Emit a load of pointer_var to the temporary variable.  */
+  gimple *load = gimple_build_assign (temp_var, pointer_var);
+
+  /* Add the new load stmt right before the original stmt.  */
+  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
+  gsi_insert_before (&gsi, load, GSI_NEW_STMT);
+  update_stmt (load);
+
+  /* Replace the lhs of the original stmt with the temp variable.  */
+  gimple_set_lhs (stmt, build_simple_mem_ref (temp_var));
+  update_stmt (stmt);
+
+  /* Update SSA names.  */
+  update_ssa (TODO_update_ssa);
+
+  return true;
+}
+
 /* Externalize variable.  On livepatch context, this means redeclaring a
    variable `TYPE var;` as `TYPE *klpe_var;`.  */
 varpool_node *
@@ -4245,10 +4313,14 @@ varpool_node::externalize (void)
   /* Inspect the variable we created.  */
   printf("Created externalized tree variable: %s\n", IDENTIFIER_POINTER (DECL_NAME
 								       (pointer_var)));
-  //debug_tree (pointer_var);
 
   /* Create a deference of the new pointer variable.  */
   tree pointer_deference = build1 (INDIRECT_REF, var_type, pointer_var);
+
+  struct new_var_content new_var_info = {
+    .pointer_var = pointer_var,
+    .pointer_deference = pointer_deference,
+  };
 
   /* Rewire references to the old variable to the new one.  */
   struct ipa_ref *ref = NULL;
@@ -4259,44 +4331,8 @@ varpool_node::externalize (void)
 	  /* Push referring function to global context.  */
 	  push_cfun (cnode->get_fun ());
 
-	  /* Look at the GIMPLE statement that generated the reference, we need
-	     to rewrite it to reference our new (pointer) variable.  */
-
-	  if (gimple_statement_with_memory_ops *gimple_mops =
-	      dyn_cast<gimple_statement_with_memory_ops *> (ref->stmt))
-	    {
-	      /* tree object that generated the reference.  */
-	      tree use = gimple_mops->op[0];
-
-	      /* Inspect it.  */
-	      //debug_tree (use);
-
-	      /* Basic block containing the stmt.  */
-	      basic_block bb = gimple_bb (gimple_mops);
-
-	      /* Create new assing statement, hence push a new gimplifier
-	         global context.  */
-	      push_gimplify_context ();
-
-	      /* Create a gimple_seq to hold our new stmt.  */
-	      gimple_seq new_seq = NULL;
-
-	      /* ... create the stmt and append it to a new gimple sequence.  */
-	      gimple *assign_stmt = gimplify_assign (use, pointer_deference, &new_seq);
-
-	      /* Replace the stmts.  */
-	      gimple_stmt_iterator gsi = gsi_for_stmt (ref->stmt);
-	      gsi_replace_with_seq (&gsi, new_seq, false);
-
-	      /* ... and destroy the context.  */
-	      pop_gimplify_context (NULL);
-
-	      /* Inspect the basic block we changed.  */
-	      debug_basic_block (bb);
-
-	      /* Update SSA names.  */
-	      update_ssa (TODO_update_ssa);
-	    }
+	  /* Walk through the stmts.  */
+	  walk_stmt_load_store_ops (ref->stmt, &new_var_info, visit_load, visit_store);
 
 	  /* Pop function out of the context.   */
 	  pop_cfun ();
