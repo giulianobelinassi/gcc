@@ -698,11 +698,8 @@ symbol_table::externalize_variables (const vec<symtab_node *> &nodes, FILE *file
   bool ret = false;
   for (unsigned i = 0; i < nodes.length(); ++i)
     {
-      if (varpool_node *vnode = dyn_cast<varpool_node *>(nodes[i]))
-	{
-	  vnode->externalize ();
-	  ret = true;
-	}
+      nodes[i]->externalize ();
+      ret = true;
     }
 
   return ret;

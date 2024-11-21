@@ -167,6 +167,12 @@ public:
   /* Verify consistency of node.  */
   void DEBUG_FUNCTION verify (void);
 
+  /* Externalize symbol.  On livepatch context, this means redeclaring a
+     symbol `TYPE var;` as `TYPE *klpe_var;`.  For functions, this redeclares
+     it as a pointer to function of same type.  Returns the created variable
+     node.  */
+  varpool_node *externalize (void);
+
   /* Return ipa reference from this symtab_node to
      REFERRED_NODE or REFERRED_VARPOOL_NODE. USE_TYPE specify type
      of the use and STMT the statement (if it exists).  */
@@ -2080,10 +2086,6 @@ struct GTY((tag ("SYMTAB_VARIABLE"))) varpool_node : public symtab_node
   /* Return true when variable can be removed from variable pool
      if all direct calls are eliminated.  */
   inline bool can_remove_if_no_refs_p (void);
-
-  /* Externalize variable.  On livepatch context, this means redeclaring a
-     variable `TYPE var;` as `TYPE *klpe_var;`.  */
-  varpool_node *externalize (void);
 
   /* Add the variable DECL to the varpool.
      Unlike finalize_decl function is intended to be used

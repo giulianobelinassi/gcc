@@ -4277,26 +4277,28 @@ visit_store (gimple *stmt, tree lhs, tree arg, void *data)
   return true;
 }
 
-/* Externalize variable.  On livepatch context, this means redeclaring a
-   variable `TYPE var;` as `TYPE *klpe_var;`.  */
+/* Externalize symbol.  On livepatch context, this means redeclaring a
+   symbol `TYPE var;` as `TYPE *klpe_var;`.  For functions, this redeclares
+   it as a pointer to function of same type.  Returns the created variable
+   node.  */
 varpool_node *
-varpool_node::externalize (void)
+symtab_node::externalize (void)
 {
-  assert(TREE_CODE (decl) == VAR_DECL);
+  gcc_assert (TREE_CODE (decl) == FUNCTION_DECL ||
+	      TREE_CODE (decl) == VAR_DECL);
 
   const char *var_name = IDENTIFIER_POINTER (DECL_NAME (decl));
 
   /* Inspect it.  */
   printf ("About to externalize: %s\n", var_name);
-  //debug_tree (decl);
 
   tree var_type = TREE_TYPE (decl);
   tree pointer_type = build_pointer_type (var_type);
 
   /* Craft a name to the new variable.  */
   char name[64];
-  memcpy(name, "klp_", 4);
-  strcpy(name + 4, var_name);
+  strcpy(name, "klp_");
+  strcat(name, var_name);
 
   /* Create variable with type matching a pointer to the old variable.  */
   tree pointer_var = build_decl (DECL_SOURCE_LOCATION (decl), VAR_DECL,
@@ -4309,10 +4311,6 @@ varpool_node::externalize (void)
 
   /* Announce the new variable to symtab.  */
   varpool_node::add (pointer_var);
-
-  /* Inspect the variable we created.  */
-  printf("Created externalized tree variable: %s\n", IDENTIFIER_POINTER (DECL_NAME
-								       (pointer_var)));
 
   /* Create a deference of the new pointer variable.  */
   tree pointer_deference = build1 (INDIRECT_REF, var_type, pointer_var);
@@ -4332,12 +4330,66 @@ varpool_node::externalize (void)
 	  push_cfun (cnode->get_fun ());
 
 	  /* Walk through the stmts.  */
+	  debug_gimple_stmt (ref->stmt);
 	  walk_stmt_load_store_ops (ref->stmt, &new_var_info, visit_load, visit_store);
 
 	  /* Pop function out of the context.   */
 	  pop_cfun ();
 	}
     }
+
+  /* Rewrite calls to the old variable to the new one.  */
+  if (cgraph_node *cnode = dyn_cast<cgraph_node *>(this))
+    {
+      /* Iterate on each caller of the function to externalize.  */
+      for (cgraph_edge *edge = cnode->callers; edge; edge = edge->next_caller)
+	{
+	  cgraph_node *node = edge->caller;
+
+	  /* Push function context.  We will modify the function.  */
+	  push_cfun (node->get_fun ());
+
+	  /* Get call stmt.  */
+	  gcall *call_stmt = edge->call_stmt;
+
+	  printf("Iterating call stmt:\n");
+	  debug_gimple_stmt (call_stmt);
+
+	  /* Create temporary variable. */
+	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
+
+	  /* Emit a load of pointer_var to the temporary variable.  */
+	  gimple *load = gimple_build_assign (temp_var, pointer_var);
+
+	  /* Add the new load stmt right before the original stmt.  */
+	  gimple_stmt_iterator gsi = gsi_for_stmt (call_stmt);
+	  gsi_insert_before (&gsi, load, GSI_NEW_STMT);
+	  update_stmt (load);
+
+	  /* Copy function arguments.  */
+	  unsigned num_args = gimple_call_num_args (call_stmt);
+	  auto_vec<tree> args;
+	  for (unsigned i = 0; i < num_args; i++)
+	    args.safe_push (gimple_call_arg (call_stmt, i));
+
+	  /* Create new call stmt.  */
+	  gcall *new_call_stmt = gimple_build_call_vec (temp_var, args);
+	  gimple_set_lhs (new_call_stmt, gimple_get_lhs (call_stmt));
+
+	  /* Replace the lhs of the original stmt with the temp variable.  */
+	  gsi = gsi_for_stmt (call_stmt);
+	  gsi_replace (&gsi, new_call_stmt, true);
+	  update_stmt (new_call_stmt);
+
+	  debug_basic_block (gimple_bb (new_call_stmt));
+
+	  /* Update SSA names.  */
+	  update_ssa (TODO_update_ssa);
+
+	  pop_cfun ();
+	}
+    }
+
 
   /* remove node.  */
   remove ();

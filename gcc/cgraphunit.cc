@@ -2239,7 +2239,7 @@ static bool livepatch_stuff(FILE *file = stdout)
 	}
 
       /* Hardcode the variable we want to externalize for now.  */
-      if (!strcmp (node->name (), "gVar"))
+      if (!strcmp (node->name (), "gVar") || !strcmp (node->name (), "gFunc"))
 	{
 	  e.safe_push(node);
 	}
