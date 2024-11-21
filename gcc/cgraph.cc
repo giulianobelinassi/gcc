@@ -4277,6 +4277,25 @@ visit_store (gimple *stmt, tree lhs, tree arg, void *data)
   return true;
 }
 
+static bool
+visit_addr (gimple *stmt, tree op, tree unk, void *data)
+{
+  struct new_var_content *new_var_info = (struct new_var_content *) data;
+  tree pointer_var = new_var_info->pointer_var;
+
+  /* Set rhs to be the a simple move from the pointer rather than the address
+     take of the original variable.  */
+  gimple_assign_set_rhs1 (stmt, pointer_var);
+
+  /* Mark stmt as modified.  */
+  update_stmt (stmt);
+
+  /* Update SSA names.  */
+  update_ssa (TODO_update_ssa);
+
+  return true;
+}
+
 /* Externalize symbol.  On livepatch context, this means redeclaring a
    symbol `TYPE var;` as `TYPE *klpe_var;`.  For functions, this redeclares
    it as a pointer to function of same type.  Returns the created variable
@@ -4331,7 +4350,8 @@ symtab_node::externalize (void)
 
 	  /* Walk through the stmts.  */
 	  debug_gimple_stmt (ref->stmt);
-	  walk_stmt_load_store_ops (ref->stmt, &new_var_info, visit_load, visit_store);
+	  walk_stmt_load_store_addr_ops (ref->stmt, &new_var_info,
+					 visit_load, visit_store, visit_addr);
 
 	  /* Pop function out of the context.   */
 	  pop_cfun ();
