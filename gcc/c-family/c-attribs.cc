@@ -173,6 +173,10 @@ static tree handle_non_overlapping_attribute (tree *, tree, tree, int, bool *);
 static tree handle_designated_init_attribute (tree *, tree, tree, int, bool *);
 static tree handle_patchable_function_entry_attribute (tree *, tree, tree,
 						       int, bool *);
+static tree handle_patchable_extract_attribute (tree *, tree, tree, int,
+						bool *);
+static tree handle_patchable_externalize_attribute (tree *, tree, tree, int,
+						    bool *);
 static tree handle_copy_attribute (tree *, tree, tree, int, bool *);
 static tree handle_nsobject_attribute (tree *, tree, tree, int, bool *);
 static tree handle_objc_root_class_attribute (tree *, tree, tree, int, bool *);
@@ -587,6 +591,12 @@ const struct attribute_spec c_common_gnu_attributes[] =
 			      handle_assume_attribute, NULL },
   { "patchable_function_entry",	1, 2, true, false, false, false,
 			      handle_patchable_function_entry_attribute,
+			      NULL },
+  { "patchable_extract",	0, 0, true, false, false, false,
+			      handle_patchable_extract_attribute,
+			      NULL },
+  { "patchable_externalize",	0, 0, true, false, false, false,
+			      handle_patchable_externalize_attribute,
 			      NULL },
   { "nocf_check",	      0, 0, false, true, true, true,
 			      handle_nocf_check_attribute, NULL },
@@ -6149,6 +6159,20 @@ handle_patchable_function_entry_attribute (tree *, tree name, tree args,
 	  return NULL_TREE;
 	}
     }
+  return NULL_TREE;
+}
+
+static tree
+handle_patchable_extract_attribute (tree *node, tree name, tree args,
+				    int, bool *no_add_attrs)
+{
+  return NULL_TREE;
+}
+
+static tree
+handle_patchable_externalize_attribute (tree *node, tree name, tree args,
+				        int, bool *no_add_attrs)
+{
   return NULL_TREE;
 }
 

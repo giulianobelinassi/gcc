@@ -2200,6 +2200,9 @@ output_in_order (void)
 auto_vec<const char *> gsymbols_to_extract;
 bool gsymbols_to_extract_init = false;
 
+auto_vec<const char *> gsymbols_to_externalize;
+bool gsymbols_to_externalize_init = false;
+
 void
 init_symbols_to_extract(void)
 {
@@ -2224,6 +2227,31 @@ init_symbols_to_extract(void)
   gsymbols_to_extract_init = true;
 }
 
+void
+init_symbols_to_externalize(void)
+{
+  if (gsymbols_to_externalize_init == true)
+    return;
+
+  if (symbols_to_externalize == NULL || *symbols_to_externalize == '\0')
+    return;
+
+  unsigned size = strlen(symbols_to_externalize) + 1;
+  char buf[size];
+  memcpy(buf, symbols_to_externalize, size);
+
+  const char *tok;
+
+  tok = strtok((char*) buf, ",");
+  while (tok != nullptr) {
+    gsymbols_to_extract.safe_push(xstrdup(tok));
+    tok = strtok(nullptr, ",");
+  }
+
+  gsymbols_to_extract_init = true;
+}
+
+
 static bool livepatch_stuff(FILE *file = stdout)
 {
   auto_vec<symtab_node *> s;
@@ -2232,18 +2260,52 @@ static bool livepatch_stuff(FILE *file = stdout)
   symtab_node *node;
   FOR_EACH_SYMBOL(node)
     {
+      /* Get what to do using __attribute__((patchable_extract)) and
+         __attribute__((patchable_externalize)).  */
+      tree decl = node->decl;
+      for (tree attrs = DECL_ATTRIBUTES (decl); attrs; attrs = TREE_CHAIN (attrs))
+	{
+	  if (lookup_attribute ("patchable_extract", attrs) != NULL
+	      && lookup_attribute_spec (get_identifier ("patchable_extract")))
+	    s.safe_push (node);
+
+	  if (lookup_attribute ("patchable_externalize", attrs) != NULL
+	      && lookup_attribute_spec (get_identifier ("patchable_externalize")))
+	    e.safe_push (node);
+	}
+
+      /* Look for the names passed on -fextract-symbols.  */
       for (unsigned i = 0; i < gsymbols_to_extract.length(); i++)
 	{
 	  if (!strcmp (node->name (), gsymbols_to_extract[i]))
 	    s.safe_push(node);
 	}
 
-      /* Hardcode the variable we want to externalize for now.  */
-      if (!strcmp (node->name (), "gVar") || !strcmp (node->name (), "gFunc"))
+      /* Look for the names passed on -fexternalize-symbols.  */
+      for (unsigned i = 0; i < gsymbols_to_externalize.length(); i++)
 	{
-	  e.safe_push(node);
+	  if (!strcmp (node->name (), gsymbols_to_externalize[i]))
+	    e.safe_push(node);
 	}
     }
+
+  /* In case there are no symbols to extract or externalize, then abort
+     the livepatch extraction procedure.  */
+  if (s.is_empty () && e.is_empty ())
+    return false;
+
+  /* Compute intersection to see if we are trying to extract and export the
+     same symbol.  */
+  for (unsigned i = 0; i < s.length (); i++)
+    for (unsigned j = i; j < e.length (); j++)
+      if (s[i] == e[j])
+	{
+	  /* We can't have this.  */
+	  error ("function %s marked for extraction and externalization",
+		 s[i]->name ());
+	  return false;
+	}
+
   /* Closure.  */
   symtab->remove_unreachable_nodes_from (s, file);
 
@@ -2251,7 +2313,7 @@ static bool livepatch_stuff(FILE *file = stdout)
   symtab->externalize_variables(e, file);
 
   /* Closure again.  */
-  //symtab->remove_unreachable_nodes_from (s, file);
+  symtab->remove_unreachable_nodes_from (s, file);
 
   return true;
 }
@@ -2262,6 +2324,7 @@ ipa_passes (void)
   gcc::pass_manager *passes = g->get_passes ();
 
   init_symbols_to_extract();
+  init_symbols_to_externalize();
 
   set_cfun (NULL);
   current_function_decl = NULL;

@@ -37,6 +37,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "pretty-print.h"
 #include "tree-pretty-print.h"
 #include "intl.h"
+#include "cgraph.h"
 
 /* Table of the tables of attributes (common, language, format, machine)
    searched.  */
