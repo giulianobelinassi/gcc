@@ -4330,6 +4330,8 @@ symtab_node::externalize (void)
 
   /* Announce the new variable to symtab.  */
   varpool_node::add (pointer_var);
+  varpool_node *new_node = varpool_node::get (pointer_var);
+
 
   /* Create a deference of the new pointer variable.  */
   tree pointer_deference = build1 (INDIRECT_REF, var_type, pointer_var);
@@ -4372,9 +4374,6 @@ symtab_node::externalize (void)
 	  /* Get call stmt.  */
 	  gcall *call_stmt = edge->call_stmt;
 
-	  printf("Iterating call stmt:\n");
-	  debug_gimple_stmt (call_stmt);
-
 	  /* Create temporary variable. */
 	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
 
@@ -4399,9 +4398,12 @@ symtab_node::externalize (void)
 	  /* Replace the lhs of the original stmt with the temp variable.  */
 	  gsi = gsi_for_stmt (call_stmt);
 	  gsi_replace (&gsi, new_call_stmt, true);
+		
 	  update_stmt (new_call_stmt);
 
-	  debug_basic_block (gimple_bb (new_call_stmt));
+	  /* Fix cgraph structure.  */
+	  node->create_reference (new_node, IPA_REF_LOAD, load);
+	  node->create_indirect_edge (new_call_stmt, 0, profile_count::uninitialized());
 
 	  /* Update SSA names.  */
 	  update_ssa (TODO_update_ssa);

@@ -2244,11 +2244,11 @@ init_symbols_to_externalize(void)
 
   tok = strtok((char*) buf, ",");
   while (tok != nullptr) {
-    gsymbols_to_extract.safe_push(xstrdup(tok));
+    gsymbols_to_externalize.safe_push(xstrdup(tok));
     tok = strtok(nullptr, ",");
   }
 
-  gsymbols_to_extract_init = true;
+  gsymbols_to_externalize_init = true;
 }
 
 

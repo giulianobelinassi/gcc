@@ -748,10 +748,7 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 		  /* Forward into each edge.  */
 		  cgraph_node *callee = edge->callee;
 		  stack.safe_push(callee);
-
-		  printf ("name: %s\n", callee->dump_name ());
 		}
-	    
 	    }
 
 	  struct ipa_ref *ref = NULL;
