@@ -1947,6 +1947,9 @@ tp_first_run_node_cmp (const void *pa, const void *pb)
   return tp_first_run_a - tp_first_run_b;
 }
 
+int
+count_formal_params (tree fndecl);
+
 /* Expand all functions that must be output.
 
    Attempt to topologically sort the nodes so function is output when
@@ -2338,6 +2341,25 @@ ipa_passes (void)
       execute_ipa_pass_list (passes->all_small_ipa_passes);
       if (seen_error ())
 	return;
+    }
+
+  char output_name[PATH_MAX];
+  strcpy(output_name, main_input_filename);
+  strcat(output_name, ".data");
+
+  FILE *file = fopen (output_name, "w");
+  if (file) 
+    {
+    cgraph_node *node;
+
+    FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
+      {
+	gcc_assert (TREE_CODE (node->decl) == FUNCTION_DECL);
+	int num_params = count_formal_params (node->decl);
+	const char *name = IDENTIFIER_POINTER (DECL_NAME (node->decl));
+
+	fprintf (file, "%s, %d\n", name, num_params);
+      }
     }
 
   livepatch_stuff();
