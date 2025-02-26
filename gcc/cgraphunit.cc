@@ -2340,7 +2340,7 @@ ipa_passes (void)
 	return;
     }
 
-  livepatch_stuff();
+  //livepatch_stuff();
 
   /* This extra symtab_remove_unreachable_nodes pass tends to catch some
      devirtualization and other changes where removal iterate.  */

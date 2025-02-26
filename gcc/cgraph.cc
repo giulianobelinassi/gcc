@@ -4309,7 +4309,8 @@ symtab_node::externalize (void)
   const char *var_name = IDENTIFIER_POINTER (DECL_NAME (decl));
 
   /* Inspect it.  */
-  printf ("About to externalize: %s\n", var_name);
+  if (dump_enabled_p ())
+    dump_printf (MSG_NOTE, "About to externalize: %s\n", var_name);
 
   tree var_type = TREE_TYPE (decl);
   tree pointer_type = build_pointer_type (var_type);

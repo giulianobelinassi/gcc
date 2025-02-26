@@ -171,6 +171,7 @@ along with GCC; see the file COPYING3.  If not see
   NEXT_PASS (pass_ipa_reference);
   /* This pass needs to be scheduled after any IP code duplication.   */
   NEXT_PASS (pass_ipa_single_use);
+  NEXT_PASS (pass_ipa_livepatch_closure);
   /* Comdat privatization come last, as direct references to comdat local
      symbols are not allowed outside of the comdat group.  Privatizing early
      would result in missed optimizations due to this restriction.  */

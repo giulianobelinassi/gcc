@@ -737,8 +737,9 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	      if (cnode->inlined_to)
 		{
 		  /* Seems to only be used during certain passes.  */
-		  printf("node %s inlined_to %s\n", cnode->name (),
-			 cnode->inlined_to->name ());
+		  if (dump_enabled_p ())
+		    dump_printf (MSG_NOTE, "node %s inlined_to %s\n", cnode->name (),
+			   cnode->inlined_to->name ());
 		  stack.safe_push(cnode->inlined_to);
 		}
 
@@ -770,7 +771,8 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
       next = node->next;
       if (!node->aux)
 	{
-	  printf("removing: %s\n", node->dump_name ());
+	  if (dump_enabled_p ())
+	    dump_printf (MSG_NOTE, "removing: %s\n", node->dump_name ());
 	  node->remove();
 	  changed = true;
 	}
