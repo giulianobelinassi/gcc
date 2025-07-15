@@ -17,6 +17,8 @@ You should have received a copy of the GNU General Public License
 along with GCC; see the file COPYING3.  If not see
 <http://www.gnu.org/licenses/>.  */
 
+#include <elf.h>
+
 #include "config.h"
 #include "system.h"
 #include "coretypes.h"
@@ -49,6 +51,140 @@ along with GCC; see the file COPYING3.  If not see
 #include "cgraph.h"
 
 #include "dumpfile.h"
+#include "diagnostic-core.h"
+#include "intl.h"
+#include "hash-map.h"
+
+
+struct symbol_attributes
+{
+  /** Offset of the symbol.  */
+  void *offset;
+
+  /** Size of symbol.  */
+  unsigned long size;
+
+  /** Type of symbol.  */
+  int st_type;
+
+  /** Bind of symbol.  */
+  int st_bind;
+
+  /** Visibility of symbol.  */
+  int st_vis;
+
+  /** Version ndx.  */
+  char ndx[8];
+
+  /** Name, as provided by readelf.  */
+  const char *name;
+
+  symbol_attributes(const char *offset, const char *size, const char *st_type,
+		    const char *st_bind, const char *st_vis, const char *ndx,
+		    const char *name)
+    {
+      this->offset = (void *) strtoul (offset, NULL, 16);
+      this->size = strtoul (size, NULL, 10);
+      this->st_type = string_to_st_type (st_type);
+      this->st_bind = string_to_st_bind (st_bind);
+      this->st_vis = string_to_st_vis (st_vis);
+      strncpy(this->ndx, ndx, 8);
+      this->ndx[7] = '\0';
+      this->name = xstrdup (name);
+
+    }
+
+  void print(void)
+    {
+      printf("offset: %lx, size: %ld, st_type: %d, st_bind: %d, st_vis: %d, ndx:"
+	     "%s, name: %s\n", offset, size, st_type, st_bind, st_vis, ndx, name);
+    }
+
+
+  /** Methods.  */
+  static int string_to_st_type (const char *str)
+    {
+      static const struct {
+	const char *name;
+	int type;
+      } names_to_type_tbl[16] = {
+	{ "NOTYPE", STT_NOTYPE },
+	{ "OBJECT", STT_OBJECT },
+	{ "FUNC",   STT_FUNC   },
+	{ "SECTION", STT_SECTION },
+	{ "FILE",   STT_FILE },
+	{ "COMMON", STT_COMMON },
+	{ "TLS", STT_TLS },
+	{ "NUM", STT_NUM },
+	{ "LOOS", STT_LOOS },
+	{ "GNU_IFUNC", STT_GNU_IFUNC },
+	{ "HIOS", STT_HIOS },
+	{ "LOPROC", STT_LOPROC },
+	{ "HIPROC", STT_HIPROC },
+      };
+
+      for (unsigned i = 0; i < ARRAY_SIZE(names_to_type_tbl); i++)
+	{
+	  if (strcmp(str, names_to_type_tbl[i].name) == 0)
+	    return names_to_type_tbl[i].type;
+	}
+
+	return -1;
+    }
+
+  static int string_to_st_bind (const char *str)
+    {
+      static const struct {
+	const char *name;
+	int type;
+      } names_to_type_tbl[16] = {
+	{ "LOCAL", STB_LOCAL },
+	{ "GLOBAL", STB_GLOBAL },
+	{ "WEAK",   STB_WEAK },
+	{ "NUM", STB_NUM },
+	{ "LOOS",   STB_LOOS },
+	{ "GNU_UNIQUE", STB_GNU_UNIQUE },
+	{ "HIOS", STB_HIOS },
+	{ "LOPROC", STB_LOPROC },
+	{ "HIPROC", STB_HIPROC },
+      };
+
+      for (unsigned i = 0; i < ARRAY_SIZE(names_to_type_tbl); i++)
+	{
+	  if (strcmp(str, names_to_type_tbl[i].name) == 0)
+	    return names_to_type_tbl[i].type;
+	}
+
+	return -1;
+    }
+
+  static int string_to_st_vis (const char *str)
+    {
+      static const struct {
+	const char *name;
+	int type;
+      } names_to_type_tbl[16] = {
+	{ "DEFAULT", STV_DEFAULT },
+	{ "INTERNAL", STV_INTERNAL },
+	{ "HIDDEN", STV_HIDDEN },
+	{ "PROTECTED", STV_PROTECTED },
+      };
+
+      for (unsigned i = 0; i < ARRAY_SIZE(names_to_type_tbl); i++)
+	{
+	  if (strcmp(str, names_to_type_tbl[i].name) == 0)
+	    return names_to_type_tbl[i].type;
+	}
+
+	return -1;
+    }
+};
+
+/* Check if string a is a prefix of string b.  */
+inline bool prefix(const char *a, const char *b)
+{
+  return !strncmp(a, b, strlen(a));
+}
 
 static auto_vec<symtab_node *> to_extract;
 static auto_vec<symtab_node *> to_externalize;
@@ -139,6 +275,133 @@ class ipa_livepatch_engine
 	}
       }
 
+    void
+    parse_readelf_output (FILE *pipe)
+      {
+	hash_map<const char *, struct symbol_attributes> *map = NULL;
+
+	if (pipe == NULL)
+	  {
+	    fatal_error (input_location,
+			 G_("cannot open pipe for reading"));
+	  }
+
+	size_t len = 0;
+	ssize_t nread;
+	char *line = NULL;
+
+	while ((nread = getline (&line, &len, pipe)) != -1)
+	  {
+	    if (prefix("Symbol table", line))
+	      {
+		/* Check in which string table we are.  */
+		char *p = line + strlen ("Symbol table ");
+		char *tbl = strtok(p, " ");
+
+		if (strcmp (tbl, "'.dynsym'") == 0)
+		  map = &dynsym_map;
+		else if (strcmp (tbl, "'.symtab'") == 0)
+		  map = &symtab_map;
+	      }
+	    else
+	      {
+		const char *num, *value, *size, *type, *bind, *vis, *ndx, *name;
+		const char *p;
+
+		num = strtok (line, " ");
+		if (ISDIGIT(num[0]))
+		  {
+		    value = strtok (NULL, " ");
+		    size = strtok (NULL, " ");
+		    type = strtok (NULL, " ");
+		    bind = strtok (NULL, " ");
+		    vis = strtok (NULL, " ");
+		    ndx = strtok (NULL, " ");
+		    name = strtok (NULL, " ");
+
+		    char *name_clean = xstrdup (name);
+		    name_clean = strtok(name_clean, "@");
+
+		    map->put (name_clean, symbol_attributes (value, size, type, bind, vis,
+							     ndx, name));
+		  }
+	      }
+	  }
+
+	free (line);
+
+	for (auto it = dynsym_map.begin(); it != dynsym_map.end(); ++it)
+	  {
+	    printf("Key: %s ", (*it).first);
+	    (*it).second.print();
+	  }
+
+      }
+
+    bool load_single_livepatch_target (const char *path)
+      {
+	/* Setup and run readelf.  */
+
+	const char *argv[4];
+	argv[0] = "/usr/bin/readelf";
+	argv[1] = "-sW";
+	argv[2] = path;
+	argv[3] = NULL;
+
+	const char *envp[4];
+	envp[0] = "LC_ALL=C";
+	envp[1] = NULL;
+
+	struct pex_obj *pex;
+	pex = pex_init (PEX_USE_PIPES, argv[0], NULL);
+	if (!pex)
+	  fatal_error (input_location, "Unable to launch readelf");
+
+	const char *errmsg;
+	int err;
+
+	errmsg = pex_run_in_environment (pex, PEX_SEARCH, argv[0],
+					 (char* const*) argv, (char * const*) envp,
+					 NULL, NULL, &err);
+
+	if (errmsg)
+	  {
+	    errno = err;
+	    fatal_error (input_location,
+			 err ? G_("cannot execute %qs: %s: %m")
+			 : G_("cannot execute %qs: %s"),
+			 argv[0], errmsg);
+	  }
+
+	/* Wait for the process to finish.  */
+	int status;
+	int ret_code = 0;
+	if (!pex_get_status (pex, 1, &status))
+	  fatal_error (input_location, "failed to get exit status: %m");
+
+	parse_readelf_output (pex_read_output (pex, false));
+
+	pex_free (pex);
+	pex = NULL;
+
+	return false;
+      }
+
+    bool load_livepatch_targets (void)
+      {
+	auto_vec<const char *> targets = tokenize_string_var(target_binary_path,
+							     ",");
+
+	for (const char *path : targets)
+	  {
+	    printf ("load_livepatch_targets\n");
+	    load_single_livepatch_target(path);
+	    //load_single_livepatch_target(target_binary_path);
+	  }
+
+	return false;
+      }
+
     bool must_run (void)
       {
 	return (bool) to_extract.length () + to_externalize.length ();
@@ -146,6 +409,8 @@ class ipa_livepatch_engine
 
     void execute (void)
       {
+	load_livepatch_targets();
+
 	/* Closure.  */
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
 
@@ -381,6 +646,9 @@ class ipa_livepatch_engine
 
     auto_vec<symtab_node *> to_extract;
     auto_vec<symtab_node *> to_externalize;
+
+    hash_map<const char *, struct symbol_attributes> dynsym_map;
+    hash_map<const char *, struct symbol_attributes> symtab_map;
 };
 
 

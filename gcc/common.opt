@@ -3867,4 +3867,8 @@ fexternalize-symbols=
 Common Joined Var(symbols_to_externalize)
 -fexternalize-symbols=<symbol1,symbol2,...> Symbols to externalize from current compilation unit.
 
+ftarget-binary=
+Common Joined Var(target_binary_path)
+-ftarget-binary=<.so, debuginfo> Livepatch target library to look for existing symbols.
+
 ; This comment is to ensure we retain the blank line above.
