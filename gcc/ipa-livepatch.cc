@@ -180,6 +180,13 @@ struct symbol_attributes
     }
 };
 
+enum externalization_type
+{
+  EXTERNALIZATION_NONE,
+  EXTERNALIZATION_STRONG,
+  EXTERNALIZATION_WEAK,
+};
+
 /* Check if string a is a prefix of string b.  */
 inline bool prefix(const char *a, const char *b)
 {
@@ -278,7 +285,7 @@ class ipa_livepatch_engine
     void
     parse_readelf_output (FILE *pipe)
       {
-	hash_map<const char *, struct symbol_attributes> *map = NULL;
+	hash_map<nofree_string_hash, struct symbol_attributes> *map = NULL;
 
 	if (pipe == NULL)
 	  {
@@ -292,6 +299,9 @@ class ipa_livepatch_engine
 
 	while ((nread = getline (&line, &len, pipe)) != -1)
 	  {
+	    if (line[nread-1] == '\n')
+	      line[nread-1] = '\0';
+
 	    if (prefix("Symbol table", line))
 	      {
 		/* Check in which string table we are.  */
@@ -309,7 +319,7 @@ class ipa_livepatch_engine
 		const char *p;
 
 		num = strtok (line, " ");
-		if (ISDIGIT(num[0]))
+		if (num && ISDIGIT(num[0]))
 		  {
 		    value = strtok (NULL, " ");
 		    size = strtok (NULL, " ");
@@ -319,23 +329,22 @@ class ipa_livepatch_engine
 		    ndx = strtok (NULL, " ");
 		    name = strtok (NULL, " ");
 
-		    char *name_clean = xstrdup (name);
-		    name_clean = strtok(name_clean, "@");
+		    /* Check if we have a name because of lines like this:
+		       0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND
+		       which doesn't have a symbol name.  */
+		    if (name)
+		      {
+			char *name_clean = xstrdup (name);
+			name_clean = strtok(name_clean, "@");
 
-		    map->put (name_clean, symbol_attributes (value, size, type, bind, vis,
-							     ndx, name));
+			map->put (name_clean, symbol_attributes (value, size, type, bind, vis,
+								 ndx, name));
+		      }
 		  }
 	      }
 	  }
 
 	free (line);
-
-	for (auto it = dynsym_map.begin(); it != dynsym_map.end(); ++it)
-	  {
-	    printf("Key: %s ", (*it).first);
-	    (*it).second.print();
-	  }
-
       }
 
     bool load_single_livepatch_target (const char *path)
@@ -415,7 +424,8 @@ class ipa_livepatch_engine
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
 
 	/* Externalization.  */
-	externalize_variables ();
+	//externalize_variables ();
+	run_externalization_process ();
 
 	/* Closure again.  */
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
@@ -574,7 +584,7 @@ class ipa_livepatch_engine
 	}
 
       /* Rewrite calls to the old variable to the new one.  */
-      if (cgraph_node *cnode = dyn_cast<cgraph_node *>(this))
+      if (cgraph_node *cnode = dyn_cast<cgraph_node *>(node))
 	{
 	  /* Iterate on each caller of the function to externalize.  */
 	  for (cgraph_edge *edge = cnode->callers; edge; edge = edge->next_caller)
@@ -631,6 +641,131 @@ class ipa_livepatch_engine
       return varpool_node::get (pointer_var);
     }
 
+    void print_dynsym (void)
+      {
+	printf ("dynsym map:\n");
+	for (auto it = dynsym_map.begin(); it != dynsym_map.end (); ++it)
+	  {
+	    printf("%s => ", (*it).first);
+	    (*it).second.print();
+	  }
+      }
+
+    void print_symtab (void)
+      {
+	printf ("symtab map:\n");
+	for (auto it = symtab_map.begin(); it != symtab_map.end (); ++it)
+	  {
+	    printf("%s => ", (*it).first);
+	    (*it).second.print();
+	  }
+      }
+
+    externalization_type get_externalization_method (const char *name)
+      {
+	/* If the symbol exists in the dynsym_map, then we can weakly
+	 * externalize it.  */
+	symbol_attributes *sym = dynsym_map.get (name);
+
+	if (sym && sym->st_vis == STB_GLOBAL)
+	  return EXTERNALIZATION_WEAK;
+
+	/* If not in the dynsym, check if it is in symtab.  If yes, the symbol
+	   is still there and should be callable with some additional steps.  */
+	sym = symtab_map.get (name);
+	if (sym && (unsigned long) sym->offset > 0)
+	  return EXTERNALIZATION_STRONG;
+
+	return EXTERNALIZATION_NONE;
+      }
+
+    externalization_type get_externalization_method (symtab_node *sym)
+      {
+	return get_externalization_method (sym->asm_name ());
+      }
+
+    void run_externalize_to_function (symtab_node *node)
+      {
+	struct ipa_ref *ref = NULL;
+	printf ("run_externalize_to_function: %s\n", node->asm_name ());
+
+	if (analized_nodes.contains (node))
+	  return;
+
+	analized_nodes.add (node);
+
+	for (unsigned i = 0; node->iterate_reference (i, ref); ++i)
+	  {
+	    if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referred))
+	      {
+		/* Get externalization method to see if we can externalize this
+		   symbol, or if we need to propagate further.  */
+		externalization_type e = get_externalization_method (cnode);
+
+		switch (e)
+		  {
+		    case EXTERNALIZATION_STRONG:
+		      cnode->externalize ();
+		      //externalize_node (cnode);
+		      break;
+
+		    case EXTERNALIZATION_WEAK:
+		      // drop body
+		      cnode->release_body ();
+		      break;
+
+		    case EXTERNALIZATION_NONE:
+		      run_externalize_to_function (cnode);
+		  }
+	      }
+	  }
+
+	/* Rewrite calls to the old variable to the new one.  */
+	if (cgraph_node *cnode = dyn_cast<cgraph_node *>(node))
+	  {
+	    /* Iterate on each callees of the function to analyze.  */
+	    for (cgraph_edge *edge = cnode->callees; edge;)
+	      {
+		cgraph_node *node = edge->callee;
+
+		/* Get externalization method to see if we can externalize this
+		   symbol, or if we need to propagate further.  */
+		externalization_type e = get_externalization_method (node);
+
+		/* Get the next callee here as externalizing the node
+		   releases the edge.  */
+		edge = edge->next_callee;
+
+		switch (e)
+		  {
+		  case EXTERNALIZATION_STRONG:
+		    printf ("Strong externalize %s\n", node->name ());
+		    node->externalize ();
+		    //externalize_node (cnode);
+		    break;
+
+		  case EXTERNALIZATION_WEAK:
+		    printf ("Weak externalize %s\n", node->name ());
+		    // drop body
+		    node->release_body ();
+		    break;
+
+		  case EXTERNALIZATION_NONE:
+		    run_externalize_to_function (node);
+		  }
+	      }
+	  }
+	}
+
+    void run_externalization_process (void)
+      {
+	/* Look to all symbols to extract and see if we can externalize
+	   symbols so our compilation unit gets smaller.  */
+	for (unsigned i = 0; i < to_extract.length(); ++i)
+	  {
+	    run_externalize_to_function (to_extract[i]);
+	  }
+      }
 
     bool externalize_variables(void)
       {
@@ -647,8 +782,10 @@ class ipa_livepatch_engine
     auto_vec<symtab_node *> to_extract;
     auto_vec<symtab_node *> to_externalize;
 
-    hash_map<const char *, struct symbol_attributes> dynsym_map;
-    hash_map<const char *, struct symbol_attributes> symtab_map;
+    hash_map<nofree_string_hash, struct symbol_attributes> dynsym_map;
+    hash_map<nofree_string_hash, struct symbol_attributes> symtab_map;
+
+    hash_set<symtab_node *> analized_nodes;
 };
 
 
@@ -692,6 +829,13 @@ public:
     }
   unsigned int execute (function *) final override
     {
+      FILE *outp = fopen ("/tmp/symtab.dot", "w");
+      gcc_assert (outp);
+
+      symtab->dump_graphviz(outp);
+
+      fclose (outp);
+
       ipa_livepatch_engine lp;
       if (!flag_ltrans && lp.must_run ())
 	lp.execute();

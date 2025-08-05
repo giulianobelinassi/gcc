@@ -308,6 +308,7 @@ cgraph_node::expand_all_artificial_thunks ()
 }
 
 extern auto_vec<const char *> gsymbols_to_extract;
+extern auto_vec<const char *> gsymbols_to_externalize;
 
 void
 dump_callgraph_transformation (const cgraph_node *original,
