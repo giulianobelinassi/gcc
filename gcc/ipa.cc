@@ -693,19 +693,6 @@ symbol_table::remove_unreachable_nodes (FILE *file)
 }
 
 bool
-symbol_table::externalize_variables (const vec<symtab_node *> &nodes, FILE *file)
-{
-  bool ret = false;
-  for (unsigned i = 0; i < nodes.length(); ++i)
-    {
-      nodes[i]->externalize ();
-      ret = true;
-    }
-
-  return ret;
-}
-
-bool
 symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FILE *file)
 {
   bool changed = false;
@@ -773,6 +760,7 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	{
 	  if (dump_enabled_p ())
 	    dump_printf (MSG_NOTE, "removing: %s\n", node->dump_name ());
+	  printf ("removing node %s\n", node->dump_name ());
 	  node->remove();
 	  changed = true;
 	}

@@ -167,12 +167,6 @@ public:
   /* Verify consistency of node.  */
   void DEBUG_FUNCTION verify (void);
 
-  /* Externalize symbol.  On livepatch context, this means redeclaring a
-     symbol `TYPE var;` as `TYPE *klpe_var;`.  For functions, this redeclares
-     it as a pointer to function of same type.  Returns the created variable
-     node.  */
-  varpool_node *externalize (void);
-
   /* Return ipa reference from this symtab_node to
      REFERRED_NODE or REFERRED_VARPOOL_NODE. USE_TYPE specify type
      of the use and STMT the statement (if it exists).  */
@@ -2294,9 +2288,6 @@ public:
     asmnodes = NULL;
     asm_last_node = NULL;
   }
-
-  /* Externalize variables.  */
-  bool externalize_variables (const vec<symtab_node *> &nodes, FILE *file);
 
   /* Perform reachability analysis and reclaim all unreachable nodes.  */
   bool remove_unreachable_nodes (FILE *file);

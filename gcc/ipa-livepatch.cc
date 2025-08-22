@@ -55,7 +55,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "intl.h"
 #include "hash-map.h"
 
-
+/* Attributes of an ELF symbol parsed by readelf.  */
 struct symbol_attributes
 {
   /** Offset of the symbol.  */
@@ -180,6 +180,16 @@ struct symbol_attributes
     }
 };
 
+/* Symbol externalization type.  There are 3 sets we must employ in order to
+   call a symbol:
+
+   NONE  : No externalization can be employed and the symbol must be copied to
+           the output with its body.
+   WEAK  : Externalization can be employed by removing the body of the symbol
+           because it is externally visible.
+   STRONG: Externalization must be employed by hacking the symbol into a
+           pointer which needs to be filled by an external tool, such as
+           libpulp or klp.  */
 enum externalization_type
 {
   EXTERNALIZATION_NONE,
@@ -396,6 +406,8 @@ class ipa_livepatch_engine
 	return false;
       }
 
+    /* Load the symbols in the target ELF in which contains the symbols.  This
+       ensures that we know which symbols are available to be called */
     bool load_livepatch_targets (void)
       {
 	auto_vec<const char *> targets = tokenize_string_var(target_binary_path,
@@ -405,7 +417,6 @@ class ipa_livepatch_engine
 	  {
 	    printf ("load_livepatch_targets\n");
 	    load_single_livepatch_target(path);
-	    //load_single_livepatch_target(target_binary_path);
 	  }
 
 	return false;
@@ -424,7 +435,6 @@ class ipa_livepatch_engine
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
 
 	/* Externalization.  */
-	//externalize_variables ();
 	run_externalization_process ();
 
 	/* Closure again.  */
@@ -661,6 +671,8 @@ class ipa_livepatch_engine
 	  }
       }
 
+    /* Given a symbol with 'name', check what externalization method we must
+       employ in order to call it.  */
     externalization_type get_externalization_method (const char *name)
       {
 	/* If the symbol exists in the dynsym_map, then we can weakly
@@ -689,11 +701,17 @@ class ipa_livepatch_engine
 	struct ipa_ref *ref = NULL;
 	printf ("run_externalize_to_function: %s\n", node->asm_name ());
 
-	if (analized_nodes.contains (node))
+	if (analyzed_nodes.contains (node))
 	  return;
 
-	analized_nodes.add (node);
+	analyzed_nodes.add (node);
 
+	/* Check the symbols this function references to.  A reference to a
+	   symbol is something like:
+	    int a = global;
+
+	   where `global` is a global variable.  Other cases exists of
+	   course.  */
 	for (unsigned i = 0; node->iterate_reference (i, ref); ++i)
 	  {
 	    if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referred))
@@ -705,8 +723,7 @@ class ipa_livepatch_engine
 		switch (e)
 		  {
 		    case EXTERNALIZATION_STRONG:
-		      cnode->externalize ();
-		      //externalize_node (cnode);
+		      externalize_node (cnode);
 		      break;
 
 		    case EXTERNALIZATION_WEAK:
@@ -723,7 +740,9 @@ class ipa_livepatch_engine
 	/* Rewrite calls to the old variable to the new one.  */
 	if (cgraph_node *cnode = dyn_cast<cgraph_node *>(node))
 	  {
-	    /* Iterate on each callees of the function to analyze.  */
+	    /* Now look for function calls in this function for symbol to
+	       externalize.  Iterate on each callees of the function to
+	       analyze.  */
 	    for (cgraph_edge *edge = cnode->callees; edge;)
 	      {
 		cgraph_node *node = edge->callee;
@@ -740,8 +759,7 @@ class ipa_livepatch_engine
 		  {
 		  case EXTERNALIZATION_STRONG:
 		    printf ("Strong externalize %s\n", node->name ());
-		    node->externalize ();
-		    //externalize_node (cnode);
+		    externalize_node (node);
 		    break;
 
 		  case EXTERNALIZATION_WEAK:
@@ -772,20 +790,33 @@ class ipa_livepatch_engine
 	bool ret = false;
 	for (unsigned i = 0; i < to_externalize.length(); ++i)
 	  {
-	    to_externalize[i]->externalize ();
+	    externalize_node (to_externalize[i]);
 	    ret = true;
 	  }
 
 	return ret;
       }
 
+    /* Symbols to extract.  */
     auto_vec<symtab_node *> to_extract;
+
+    /* Symbols to externalize, that means to be redeclared as a pointer to the
+       original variable.  */
     auto_vec<symtab_node *> to_externalize;
 
+    /* hash mapping the symbol name (e.g. function name) to attributes in the
+       dynsym table.  This means symbols that can be called without doing
+       externsive externalization hacks.  */
     hash_map<nofree_string_hash, struct symbol_attributes> dynsym_map;
+
+    /* hash mapping the symbol name (e.g. function name) to attributes in the
+       symtab table.  This means symbols that needs externalization hacks to
+       be accesses/called.  */
     hash_map<nofree_string_hash, struct symbol_attributes> symtab_map;
 
-    hash_set<symtab_node *> analized_nodes;
+    /* Set of nodes that we analyzed.  This avoids recursion when doing DFS
+       in the graph.  */
+    hash_set<symtab_node *> analyzed_nodes;
 };
 
 
@@ -824,18 +855,18 @@ public:
 
   bool gate (function *) final override
     {
-      /* Do not re-run on ltrans stage.  */
+      /* Do not do the check here, we must build the `ipa_livepatch_engine`
+	 object before checking that.  */
       return true; //!flag_ltrans && lp.must_run ();
     }
   unsigned int execute (function *) final override
     {
+#if 0
       FILE *outp = fopen ("/tmp/symtab.dot", "w");
       gcc_assert (outp);
-
       symtab->dump_graphviz(outp);
-
       fclose (outp);
-
+#endif
       ipa_livepatch_engine lp;
       if (!flag_ltrans && lp.must_run ())
 	lp.execute();
