@@ -1,0 +1,79 @@
+# Copyright (C) 2012-2025 Free Software Foundation, Inc.
+#
+# This file is part of GCC.
+#
+# GCC is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3, or (at your option)
+# any later version.
+#
+# GCC is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with GCC; see the file COPYING3.  If not see
+# <http://www.gnu.org/licenses/>.
+
+# GCC testsuite that uses the `dg.exp' driver.
+
+# Load support procs.
+load_lib gcc.exp
+load_lib gcc-dg.exp
+
+# Initialize `dg'.
+dg-init
+
+# Silence the "dg-with-debuginfo" option.
+proc dg-with-debuginfo { args } {
+    send_user "dg-with-debuginfo args = $args \n\n"
+}
+
+proc lp-link-and-analyze { testname flags default_extra_flags } {
+
+
+    send_user "testname: $testname"
+
+    set generate_debuginfo_p false
+    set compile_type "executable"
+    set output_file "./[file rootname [file tail $testname]].so"
+
+    # Needed to compile file into a shared library for analysis.
+    set options "{additional_flags=$flags} {additional_flags=$default_extra_flags}"
+    set options "{additional_flags=-shared} {additional_flags=-fPIC} $options"
+
+    #send_user "options before = $options \n\n"
+
+    foreach test $testname {
+      set tmp [dg-get-options $test]
+      #send_user "dg-get-options: \* $tmp \*  "
+
+      foreach op $tmp {
+          set cmd [lindex $op 0]
+
+          if { [string match "dg-with-debuginfo" $cmd ] } {
+              set generate_debuginfo_p true
+          }
+      }
+
+      if { $generate_debuginfo_p } {
+        # Generate a shared library.
+        set lines [gcc_target_compile $test $output_file "executable" $options]
+
+        # Now recompile the test passing our testing flags.
+        gcc-dg-runtest $test "-ftarget-binary=$output_file" ""
+      } else {
+        # Default test.
+        gcc-dg-runtest $test "" ""
+      }
+    }
+}
+
+# Main loop.
+lp-link-and-analyze [lsort [glob -nocomplain $srcdir/$subdir/*.c]] "" ""
+
+#gcc-dg-runtest [lsort [glob -nocomplain $srcdir/$subdir/*.c]] "" ""
+
+# All done.
+dg-finish

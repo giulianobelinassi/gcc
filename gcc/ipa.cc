@@ -760,7 +760,6 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	{
 	  if (dump_enabled_p ())
 	    dump_printf (MSG_NOTE, "removing: %s\n", node->dump_name ());
-	  printf ("removing node %s\n", node->dump_name ());
 	  node->remove();
 	  changed = true;
 	}

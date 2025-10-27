@@ -699,7 +699,6 @@ class ipa_livepatch_engine
     void run_externalize_to_function (symtab_node *node)
       {
 	struct ipa_ref *ref = NULL;
-	printf ("run_externalize_to_function: %s\n", node->asm_name ());
 
 	if (analyzed_nodes.contains (node))
 	  return;
