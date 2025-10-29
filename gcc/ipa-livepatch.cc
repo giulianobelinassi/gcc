@@ -316,6 +316,10 @@ class ipa_livepatch_engine
     void
     populate_extract_and_externalize(void)
       {
+	/* Clear the vectors so we can reinitialize them.  */
+	to_extract.truncate(0);
+	to_externalize.truncate(0);
+
 	symtab_node *node;
 	FOR_EACH_SYMBOL (node)
 	{
@@ -482,10 +486,14 @@ class ipa_livepatch_engine
       {
 	load_livepatch_targets();
 
+	/* Initialize the symbols we must perform analysis.  */
+	populate_extract_and_externalize ();
+
 	/* Closure.  */
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
 
-	/* Initialize the symbols we must perform analysis.  */
+	/* Reinitialize the extract and externalize vectors because some.
+	   nodes may have been removed.  */
 	populate_extract_and_externalize ();
 
 	/* Externalization.  */
@@ -503,6 +511,8 @@ class ipa_livepatch_engine
     {
       tree pointer_var;
       tree pointer_deference;
+      symtab_node *referring;
+      symtab_node *reference;
     };
 
     static bool
@@ -532,6 +542,13 @@ class ipa_livepatch_engine
       /* Replace the stmts.  */
       gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
       gsi_replace_with_seq (&gsi, new_seq, false);
+
+      /* Update the references in the callgraph.  */
+      symtab_node *referring = new_var_info->referring;
+      symtab_node *reference = new_var_info->reference;
+
+      referring->create_reference(reference, IPA_REF_LOAD, assign_stmt);
+
       /* ... and destroy the context.  */
       pop_gimplify_context (NULL);
 
@@ -558,6 +575,12 @@ class ipa_livepatch_engine
       gsi_insert_before (&gsi, load, GSI_NEW_STMT);
       update_stmt (load);
 
+      /* Update the references in the callgraph.  */
+      symtab_node *referring = new_var_info->referring;
+      symtab_node *reference = new_var_info->reference;
+
+      referring->create_reference(reference, IPA_REF_LOAD, load);
+
       /* Replace the lhs of the original stmt with the temp variable.  */
       gimple_set_lhs (stmt, build_simple_mem_ref (temp_var));
       update_stmt (stmt);
@@ -580,6 +603,12 @@ class ipa_livepatch_engine
 
       /* Mark stmt as modified.  */
       update_stmt (stmt);
+
+      /* Update the references in the callgraph.  */
+      symtab_node *referring = new_var_info->referring;
+      symtab_node *reference = new_var_info->reference;
+
+      referring->create_reference(reference, IPA_REF_ADDR, stmt);
 
       /* Update SSA names.  */
       update_ssa (TODO_update_ssa);
@@ -619,19 +648,15 @@ class ipa_livepatch_engine
 	 unit.  */
       TREE_STATIC (pointer_var) = true;
       TREE_PUBLIC (pointer_var) = true;
+      TREE_USED (pointer_var) = true;
 
       /* Announce the new variable to symtab.  */
       varpool_node::add (pointer_var);
       varpool_node *new_node = varpool_node::get (pointer_var);
-
+      new_node->force_output = true;
 
       /* Create a deference of the new pointer variable.  */
       tree pointer_deference = build1 (INDIRECT_REF, var_type, pointer_var);
-
-      struct new_var_content new_var_info = {
-	.pointer_var = pointer_var,
-	.pointer_deference = pointer_deference,
-      };
 
       /* Rewire references to the old variable to the new one.  */
       struct ipa_ref *ref = NULL;
@@ -639,11 +664,18 @@ class ipa_livepatch_engine
 	{
 	  if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referring))
 	    {
+	      struct new_var_content new_var_info = {
+		.pointer_var = pointer_var,
+		.pointer_deference = pointer_deference,
+		.referring = ref->referring,
+		.reference = new_node,
+	      };
+
 	      /* Push referring function to global context.  */
 	      push_cfun (cnode->get_fun ());
 
 	      /* Walk through the stmts.  */
-	      debug_gimple_stmt (ref->stmt);
+	      //debug_gimple_stmt (ref->stmt);
 	      walk_stmt_load_store_addr_ops (ref->stmt, &new_var_info,
 					     visit_load, visit_store, visit_addr);
 

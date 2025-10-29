@@ -12,4 +12,4 @@ int f(void)
 
 /* { dg-final { scan-tree-dump-not "int g" "optimized" } } */
 /* { dg-final { scan-tree-dump "klpe_g" "optimized" } } */
-/* { dg-final { scan-tree-dump "return \\*klpe_g" "optimized } } */
+/* { dg-final { scan-assembler "klpe_g:" } } */
