@@ -55,6 +55,60 @@ along with GCC; see the file COPYING3.  If not see
 #include "intl.h"
 #include "hash-map.h"
 
+auto_vec<const char *> gsymbols_to_extract;
+auto_vec<const char *> gsymbols_to_externalize;
+
+static bool gsymbols_to_extract_init = false;
+static bool gsymbols_to_externalize_init = false;
+
+void
+init_symbols_to_extract(void)
+{
+  if (gsymbols_to_extract_init == true)
+    return;
+
+  if (symbols_to_extract == NULL || *symbols_to_extract == '\0')
+    return;
+
+  unsigned size = strlen(symbols_to_extract) + 1;
+  char buf[size];
+  memcpy(buf, symbols_to_extract, size);
+
+  const char *tok;
+
+  tok = strtok((char*) buf, ",");
+  while (tok != nullptr) {
+    gsymbols_to_extract.safe_push(xstrdup(tok));
+    tok = strtok(nullptr, ",");
+  }
+
+  gsymbols_to_extract_init = true;
+}
+
+void
+init_symbols_to_externalize(void)
+{
+  if (gsymbols_to_externalize_init == true)
+    return;
+
+  if (symbols_to_externalize == NULL || *symbols_to_externalize == '\0')
+    return;
+
+  unsigned size = strlen(symbols_to_externalize) + 1;
+  char buf[size];
+  memcpy(buf, symbols_to_externalize, size);
+
+  const char *tok;
+
+  tok = strtok((char*) buf, ",");
+  while (tok != nullptr) {
+    gsymbols_to_externalize.safe_push(xstrdup(tok));
+    tok = strtok(nullptr, ",");
+  }
+
+  gsymbols_to_externalize_init = true;
+}
+
 /* Attributes of an ELF symbol parsed by readelf.  */
 struct symbol_attributes
 {
@@ -257,15 +311,12 @@ class ipa_livepatch_engine
 {
   public:
     ipa_livepatch_engine ()
+      {}
+
+    void
+    populate_extract_and_externalize(void)
       {
 	symtab_node *node;
-
-	auto_vec<const char *> cmdline_extract_syms = tokenize_string_var
-	  (symbols_to_extract, ",");
-
-	auto_vec<const char *> cmdline_externalize_syms = tokenize_string_var
-	  (symbols_to_externalize, ",");
-
 	FOR_EACH_SYMBOL (node)
 	{
 	  /* Get what to do using __attribute__((patchable_extract)) and
@@ -283,11 +334,11 @@ class ipa_livepatch_engine
 	    }
 
 	  /* Look for the names passed on -fextract-symbols.  */
-	  if (is_in_vector (cmdline_extract_syms, node->name ()))
+	  if (is_in_vector (gsymbols_to_extract, node->name ()))
 	    to_extract.safe_push (node);
 
 	  /* Look for the names passed on -fexternalize-symbols.  */
-	  if (is_in_vector (cmdline_externalize_syms, node->name ()))
+	  if (is_in_vector (gsymbols_to_externalize, node->name ()))
 	    to_externalize.safe_push (node);
 	}
       }
@@ -427,18 +478,23 @@ class ipa_livepatch_engine
 	return (bool) to_extract.length () + to_externalize.length ();
       }
 
-    void execute (void)
+    int execute (void)
       {
 	load_livepatch_targets();
 
 	/* Closure.  */
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
 
+	/* Initialize the symbols we must perform analysis.  */
+	populate_extract_and_externalize ();
+
 	/* Externalization.  */
 	run_externalization_process ();
 
 	/* Closure again.  */
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
+
+	return 0;
       }
 
   private:
@@ -452,6 +508,9 @@ class ipa_livepatch_engine
     static bool
     visit_load (gimple *stmt, tree rhs, tree arg, void *data)
     {
+      (void) rhs;
+      (void) arg;
+
       struct new_var_content *new_var_info = (struct new_var_content *) data;
       tree pointer_deference = new_var_info->pointer_deference;
 
@@ -549,7 +608,7 @@ class ipa_livepatch_engine
 
       /* Craft a name to the new variable.  */
       char name[64];
-      strcpy(name, "klp_");
+      strcpy(name, "klpe_");
       strcat(name, var_name);
 
       /* Create variable with type matching a pointer to the old variable.  */
@@ -782,6 +841,12 @@ class ipa_livepatch_engine
 	  {
 	    run_externalize_to_function (to_extract[i]);
 	  }
+
+	/* Look for symbols that the user input as needing externalization.  */
+	for (unsigned i = 0; i < to_externalize.length(); ++i)
+	  {
+	    externalize_node (to_externalize[i]);
+	  }
       }
 
     bool externalize_variables(void)
@@ -854,9 +919,12 @@ public:
 
   bool gate (function *) final override
     {
-      /* Do not do the check here, we must build the `ipa_livepatch_engine`
-	 object before checking that.  */
-      return true; //!flag_ltrans && lp.must_run ();
+      // Make sure the global extract and externalize vectors are initialized.
+      init_symbols_to_extract();
+      init_symbols_to_externalize();
+
+      return !flag_ltrans &&
+	     (gsymbols_to_extract.length() | gsymbols_to_externalize.length());
     }
   unsigned int execute (function *) final override
     {
@@ -866,11 +934,9 @@ public:
       symtab->dump_graphviz(outp);
       fclose (outp);
 #endif
-      ipa_livepatch_engine lp;
-      if (!flag_ltrans && lp.must_run ())
-	lp.execute();
 
-      return 0;
+      ipa_livepatch_engine lp;
+      return lp.execute();
     }
 
 }; // class pass_ipa_livepatch_closure

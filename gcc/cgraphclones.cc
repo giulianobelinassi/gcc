@@ -310,11 +310,17 @@ cgraph_node::expand_all_artificial_thunks ()
 extern auto_vec<const char *> gsymbols_to_extract;
 extern auto_vec<const char *> gsymbols_to_externalize;
 
+void init_symbols_to_extract(void);
+void init_symbols_to_externalize(void);
+
 void
 dump_callgraph_transformation (const cgraph_node *original,
 			       const cgraph_node *clone,
 			       const char *suffix)
 {
+
+  init_symbols_to_extract();
+  init_symbols_to_externalize();
 
   for (unsigned i = 0; i < gsymbols_to_extract.length(); i++)
     {

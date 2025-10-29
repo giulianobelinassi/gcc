@@ -2197,67 +2197,10 @@ output_in_order (void)
   symtab->clear_asm_symbols ();
 }
 
-auto_vec<const char *> gsymbols_to_extract;
-bool gsymbols_to_extract_init = false;
-
-auto_vec<const char *> gsymbols_to_externalize;
-bool gsymbols_to_externalize_init = false;
-
-void
-init_symbols_to_extract(void)
-{
-  if (gsymbols_to_extract_init == true)
-    return;
-
-  if (symbols_to_extract == NULL || *symbols_to_extract == '\0')
-    return;
-
-  unsigned size = strlen(symbols_to_extract) + 1;
-  char buf[size];
-  memcpy(buf, symbols_to_extract, size);
-
-  const char *tok;
-
-  tok = strtok((char*) buf, ",");
-  while (tok != nullptr) {
-    gsymbols_to_extract.safe_push(xstrdup(tok));
-    tok = strtok(nullptr, ",");
-  }
-
-  gsymbols_to_extract_init = true;
-}
-
-void
-init_symbols_to_externalize(void)
-{
-  if (gsymbols_to_externalize_init == true)
-    return;
-
-  if (symbols_to_externalize == NULL || *symbols_to_externalize == '\0')
-    return;
-
-  unsigned size = strlen(symbols_to_externalize) + 1;
-  char buf[size];
-  memcpy(buf, symbols_to_externalize, size);
-
-  const char *tok;
-
-  tok = strtok((char*) buf, ",");
-  while (tok != nullptr) {
-    gsymbols_to_externalize.safe_push(xstrdup(tok));
-    tok = strtok(nullptr, ",");
-  }
-
-  gsymbols_to_externalize_init = true;
-}
-
 static void
 ipa_passes (void)
 {
   gcc::pass_manager *passes = g->get_passes ();
-
-  init_symbols_to_extract();
-  init_symbols_to_externalize();
 
   set_cfun (NULL);
   current_function_decl = NULL;
