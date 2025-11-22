@@ -33,6 +33,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "ipa-utils.h"
 #include "stringpool.h"
 #include "attribs.h"
+#include "dominance.h"
 
 #include "value-range.h"
 #include "basic-block.h"
@@ -60,6 +61,31 @@ auto_vec<const char *> gsymbols_to_externalize;
 
 static bool gsymbols_to_extract_init = false;
 static bool gsymbols_to_externalize_init = false;
+
+static void
+remove_node_safe (symtab_node *node)
+{
+  if (dyn_cast <varpool_node *>(node))
+    {
+      node->remove ();
+      return;
+    }
+
+  struct function *fun = DECL_STRUCT_FUNCTION (node->decl);
+
+  /* In case we have the Control Flow Graph.  */
+  if (fun && fun->cfg)
+    {
+      /* Check if we have computed dominator tree.  If yes, then release it.  */
+      if (dom_info_available_p (fun, CDI_DOMINATORS))
+	free_dominance_info (fun, CDI_DOMINATORS);
+
+      if (dom_info_available_p (fun, CDI_POST_DOMINATORS))
+	free_dominance_info (fun, CDI_POST_DOMINATORS);
+    }
+
+  node->remove ();
+}
 
 void
 init_symbols_to_extract(void)
@@ -655,6 +681,10 @@ class ipa_livepatch_engine
       varpool_node *new_node = varpool_node::get (pointer_var);
       new_node->force_output = true;
 
+      /* Make sure the node is marked as analyzed for
+	 `remove_unreferenced_decls` not catch it as unreferenced.  */
+      new_node->analyzed = true;
+
       /* Create a deference of the new pointer variable.  */
       tree pointer_deference = build1 (INDIRECT_REF, var_type, pointer_var);
 
@@ -738,7 +768,7 @@ class ipa_livepatch_engine
 
 
       /* remove node.  */
-      node->remove ();
+      remove_node_safe (node);
       return varpool_node::get (pointer_var);
     }
 

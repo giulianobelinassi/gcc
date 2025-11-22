@@ -19,6 +19,6 @@ int f(void)
 }
 
 /* { dg-final { scan-tree-dump "klpe_g" "optimized" } } */
-/* { dg-final { scan-tree-dump "klpe_h" "optimized" } } */
-/* { dg-final { scan-assembler "klpe_g:" "optimized" } } */
-/* { dg-final { scan-assembler "klpe_h:" "optimized" } } */
+/* { dg-final { scan-tree-dump-not "klpe_h" "optimized" } } */
+/* { dg-final { scan-assembler "klpe_g:" } } */
+/* { dg-final { scan-assembler-not "klpe_h:" } } */
