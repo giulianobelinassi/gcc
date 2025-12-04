@@ -642,6 +642,40 @@ class ipa_livepatch_engine
       return true;
     }
 
+    /* Run on references of the function to externalize which are not covered
+       by GIMPLE stmts, for example on C99 initializers.  */
+    static tree
+    tree_walk_externalizer (tree *tp, int *walk_subtrees, void *data)
+    {
+      struct new_var_content *new_var_info = (struct new_var_content *) data;
+      /* in the following case:
+	  struct AA {
+	    void *fun;
+	  } A = {
+	    .fun = function,
+	  };
+	  and if we weed to externalize `function`, we need to remove the
+	  reference to function.
+       */
+      if (TREE_CODE (*tp) == ADDR_EXPR)
+	{
+	  tree arg = TREE_OPERAND (*tp, 0);
+	  if (VAR_OR_FUNCTION_DECL_P (arg))
+	    {
+	      warning_at (EXPR_LOCATION (*tp), 0,
+			  "Unable to fully externalize %s: used by initializer "
+			  "of %s\n",
+			  IDENTIFIER_POINTER (DECL_NAME (arg)),
+			  new_var_info->referring->name ());
+
+	      /* Drop the initializer.  */
+	      *tp = build_zero_cst (integer_type_node);
+	      *walk_subtrees = 0;
+	    }
+	}
+      return NULL_TREE;
+    }
+
     /* Externalize symbol.  On livepatch context, this means redeclaring a
        symbol `TYPE var;` as `TYPE *klpe_var;`.  For functions, this redeclares
        it as a pointer to function of same type.  Returns the created variable
@@ -692,15 +726,15 @@ class ipa_livepatch_engine
       struct ipa_ref *ref = NULL;
       for (unsigned i = 0; node->iterate_referring (i, ref); ++i)
 	{
+	  struct new_var_content new_var_info = {
+	    .pointer_var = pointer_var,
+	    .pointer_deference = pointer_deference,
+	    .referring = ref->referring,
+	    .reference = new_node,
+	  };
+
 	  if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referring))
 	    {
-	      struct new_var_content new_var_info = {
-		.pointer_var = pointer_var,
-		.pointer_deference = pointer_deference,
-		.referring = ref->referring,
-		.reference = new_node,
-	      };
-
 	      /* Push referring function to global context.  */
 	      push_cfun (cnode->get_fun ());
 
@@ -711,6 +745,13 @@ class ipa_livepatch_engine
 
 	      /* Pop function out of the context.   */
 	      pop_cfun ();
+	    }
+	  /* The symbol could have been used as a variable initialization, or is
+	   * being used as a variable reference.  */
+	  if (varpool_node *vnode = dyn_cast<varpool_node *> (ref->referring))
+	    {
+	      tree init = DECL_INITIAL (vnode->decl);
+	      walk_tree (&init, tree_walk_externalizer, (void *) &new_var_info, NULL);
 	    }
 	}
 
