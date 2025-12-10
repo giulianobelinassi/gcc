@@ -58,14 +58,16 @@ along with GCC; see the file COPYING3.  If not see
 
 auto_vec<const char *> gsymbols_to_extract;
 auto_vec<const char *> gsymbols_to_externalize;
+auto_vec<const char *> gsymbols_to_weakly_externalize;
 
 static bool gsymbols_to_extract_init = false;
 static bool gsymbols_to_externalize_init = false;
+static bool gsymbols_to_weakly_externalize_init = false;
 
 static void
 remove_node_safe (symtab_node *node)
 {
-  if (dyn_cast <varpool_node *>(node))
+  if (is_a <varpool_node *>(node))
     {
       node->remove ();
       return;
@@ -133,6 +135,30 @@ init_symbols_to_externalize(void)
   }
 
   gsymbols_to_externalize_init = true;
+}
+
+void
+init_symbols_to_weakly_externalize(void)
+{
+  if (gsymbols_to_weakly_externalize_init == true)
+    return;
+
+  if (symbols_to_weakly_externalize == NULL || *symbols_to_weakly_externalize == '\0')
+    return;
+
+  unsigned size = strlen(symbols_to_weakly_externalize) + 1;
+  char buf[size];
+  memcpy(buf, symbols_to_weakly_externalize, size);
+
+  const char *tok;
+
+  tok = strtok((char*) buf, ",");
+  while (tok != nullptr) {
+    gsymbols_to_weakly_externalize.safe_push(xstrdup(tok));
+    tok = strtok(nullptr, ",");
+  }
+
+  gsymbols_to_weakly_externalize_init = true;
 }
 
 /* Attributes of an ELF symbol parsed by readelf.  */
@@ -285,6 +311,7 @@ inline bool prefix(const char *a, const char *b)
 
 static auto_vec<symtab_node *> to_extract;
 static auto_vec<symtab_node *> to_externalize;
+static auto_vec<symtab_node *> to_weakly_externalize;
 
 static bool
 is_in_vector (const vec<const char *> &vec, const char *value)
@@ -337,6 +364,12 @@ class ipa_livepatch_engine
 {
   public:
     ipa_livepatch_engine ()
+      : to_extract(),
+	to_externalize(),
+	dynsym_map(),
+	symtab_map(),
+	can_decide_visibility_p(false),
+	analyzed_nodes()
       {}
 
     void
@@ -360,7 +393,13 @@ class ipa_livepatch_engine
 
 	      if (lookup_attribute ("patchable_externalize", attrs) != NULL
 		  && lookup_attribute_spec (get_identifier ("patchable_externalize")))
-		to_externalize.safe_push (node);
+		to_externalize.safe_push (std::make_pair(node,
+							 EXTERNALIZATION_STRONG));
+
+	      if (lookup_attribute ("patchable_weakly_externalize", attrs) != NULL
+		  && lookup_attribute_spec (get_identifier ("patchable_weakly_externalize")))
+		to_externalize.safe_push (std::make_pair(node,
+							 EXTERNALIZATION_WEAK));
 	    }
 
 	  /* Look for the names passed on -fextract-symbols.  */
@@ -369,7 +408,13 @@ class ipa_livepatch_engine
 
 	  /* Look for the names passed on -fexternalize-symbols.  */
 	  if (is_in_vector (gsymbols_to_externalize, node->name ()))
-	    to_externalize.safe_push (node);
+	    to_externalize.safe_push (std::make_pair(node,
+						     EXTERNALIZATION_STRONG));
+
+	  /* Look for the names passed on -fexternalize-symbols.  */
+	  if (is_in_vector (gsymbols_to_weakly_externalize, node->name ()))
+	    to_externalize.safe_push (std::make_pair(node,
+						     EXTERNALIZATION_WEAK));
 	}
       }
 
@@ -398,6 +443,8 @@ class ipa_livepatch_engine
 		/* Check in which string table we are.  */
 		char *p = line + strlen ("Symbol table ");
 		char *tbl = strtok(p, " ");
+
+		can_decide_visibility_p = true;
 
 		if (strcmp (tbl, "'.dynsym'") == 0)
 		  map = &dynsym_map;
@@ -890,6 +937,10 @@ class ipa_livepatch_engine
 		    case EXTERNALIZATION_WEAK:
 		      // drop body
 		      cnode->release_body ();
+		      cnode->reset ();
+		      cnode->body_removed = true;
+		      cnode->analyzed = 0;
+		      DECL_EXTERNAL (cnode->decl) = 1;
 		      break;
 
 		    case EXTERNALIZATION_NONE:
@@ -927,6 +978,10 @@ class ipa_livepatch_engine
 		    printf ("Weak externalize %s\n", node->name ());
 		    // drop body
 		    node->release_body ();
+		    node->reset ();
+		    node->body_removed = true;
+		    node->analyzed = 0;
+		    DECL_EXTERNAL (cnode->decl) = 1;
 		    break;
 
 		  case EXTERNALIZATION_NONE:
@@ -948,28 +1003,46 @@ class ipa_livepatch_engine
 	/* Look for symbols that the user input as needing externalization.  */
 	for (unsigned i = 0; i < to_externalize.length(); ++i)
 	  {
-	    externalize_node (to_externalize[i]);
-	  }
-      }
+	    symtab_node *node = to_externalize[i].first;
+	    externalization_type ext = to_externalize[i].second;
 
-    bool externalize_variables(void)
-      {
-	bool ret = false;
-	for (unsigned i = 0; i < to_externalize.length(); ++i)
-	  {
-	    externalize_node (to_externalize[i]);
-	    ret = true;
+	    if (ext == EXTERNALIZATION_STRONG)
+	      externalize_node (node);
+	    else if (ext == EXTERNALIZATION_WEAK)
+	      {
+		/* Check if it actually makes sense to do it.  */
+		if (DECL_VISIBILITY (node->decl) == VISIBILITY_DEFAULT)
+		  {
+		    if (cgraph_node *cnode = dyn_cast<cgraph_node *> (node))
+		      {
+			cnode->release_body ();
+			cnode->reset ();
+			cnode->body_removed = true;
+			cnode->definition = 0;
+			DECL_EXTERNAL (cnode->decl) = true;
+		      }
+		    else if (varpool_node *vnode = dyn_cast<varpool_node *> (node))
+		      {
+			// TODO: drop the initializer and declare it as extern.
+			TREE_STATIC (node->decl) = 0;
+			DECL_EXTERNAL (node->decl) = 1;
+		      }
+		  }
+		else
+		  error_at (DECL_SOURCE_LOCATION (node->decl), 0, "Unable to "
+			    "weakly externalize %s, function is not public "
+			    "visibile\n", IDENTIFIER_POINTER (DECL_NAME
+							      (node->decl)));
+	      }
 	  }
-
-	return ret;
       }
 
     /* Symbols to extract.  */
     auto_vec<symtab_node *> to_extract;
 
     /* Symbols to externalize, that means to be redeclared as a pointer to the
-       original variable.  */
-    auto_vec<symtab_node *> to_externalize;
+       original variable, or simply to have its body removed.  */
+    auto_vec<std::pair<symtab_node *, externalization_type>> to_externalize;
 
     /* hash mapping the symbol name (e.g. function name) to attributes in the
        dynsym table.  This means symbols that can be called without doing
@@ -980,6 +1053,9 @@ class ipa_livepatch_engine
        symtab table.  This means symbols that needs externalization hacks to
        be accesses/called.  */
     hash_map<nofree_string_hash, struct symbol_attributes> symtab_map;
+
+    /* Flag to identify if the maps can decide visibility.  */
+    bool can_decide_visibility_p;
 
     /* Set of nodes that we analyzed.  This avoids recursion when doing DFS
        in the graph.  */
@@ -1025,9 +1101,11 @@ public:
       // Make sure the global extract and externalize vectors are initialized.
       init_symbols_to_extract();
       init_symbols_to_externalize();
+      init_symbols_to_weakly_externalize();
 
       return !flag_ltrans &&
-	     (gsymbols_to_extract.length() | gsymbols_to_externalize.length());
+	     (gsymbols_to_extract.length() | gsymbols_to_externalize.length() |
+	      gsymbols_to_weakly_externalize.length());
     }
   unsigned int execute (function *) final override
     {
