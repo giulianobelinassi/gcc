@@ -309,10 +309,6 @@ inline bool prefix(const char *a, const char *b)
   return !strncmp(a, b, strlen(a));
 }
 
-static auto_vec<symtab_node *> to_extract;
-static auto_vec<symtab_node *> to_externalize;
-static auto_vec<symtab_node *> to_weakly_externalize;
-
 static bool
 is_in_vector (const vec<const char *> &vec, const char *value)
 {
@@ -411,7 +407,7 @@ class ipa_livepatch_engine
 	    to_externalize.safe_push (std::make_pair(node,
 						     EXTERNALIZATION_STRONG));
 
-	  /* Look for the names passed on -fexternalize-symbols.  */
+	  /* Look for the names passed on -fweakly-externalize-symbols.  */
 	  if (is_in_vector (gsymbols_to_weakly_externalize, node->name ()))
 	    to_externalize.safe_push (std::make_pair(node,
 						     EXTERNALIZATION_WEAK));
@@ -543,7 +539,8 @@ class ipa_livepatch_engine
 
 	for (const char *path : targets)
 	  {
-	    printf ("load_livepatch_targets\n");
+	    if (dump_enabled_p ())
+	      dump_printf (MSG_NOTE, "load_livepatch_targets\n");
 	    load_single_livepatch_target(path);
 	  }
 
@@ -723,6 +720,42 @@ class ipa_livepatch_engine
       return NULL_TREE;
     }
 
+    void
+    weakly_externalize_node (cgraph_node *node)
+      {
+	// drop body
+	node->release_body ();
+	node->reset ();
+	node->body_removed = true;
+	node->analyzed = 0;
+	DECL_EXTERNAL (node->decl) = 1;
+      }
+
+    void
+    weakly_externalize_node (varpool_node *node)
+    {
+      // TODO: drop the initializer and declare it as extern.
+      TREE_STATIC (node->decl) = 0;
+      DECL_EXTERNAL (node->decl) = 1;
+    }
+
+    void
+    weakly_externalize_node (symtab_node *node)
+      {
+	if (cgraph_node *cnode = dyn_cast<cgraph_node *> (node))
+	  {
+	    weakly_externalize_node (cnode);
+	    return;
+	  }
+	if (varpool_node *vnode = dyn_cast <varpool_node *> (node))
+	  {
+	    weakly_externalize_node (vnode);
+	    return;
+	  }
+
+	gcc_unreachable ();
+      }
+
     /* Externalize symbol.  On livepatch context, this means redeclaring a
        symbol `TYPE var;` as `TYPE *klpe_var;`.  For functions, this redeclares
        it as a pointer to function of same type.  Returns the created variable
@@ -854,6 +887,8 @@ class ipa_livepatch_engine
 	    }
 	}
 
+      /* Mark node as externalized.  */
+      externalized.add (node);
 
       /* remove node.  */
       remove_node_safe (node);
@@ -888,7 +923,7 @@ class ipa_livepatch_engine
 	 * externalize it.  */
 	symbol_attributes *sym = dynsym_map.get (name);
 
-	if (sym && sym->st_vis == STB_GLOBAL)
+	if (sym && sym->st_bind == STB_GLOBAL && sym->st_vis == STV_DEFAULT)
 	  return EXTERNALIZATION_WEAK;
 
 	/* If not in the dynsym, check if it is in symtab.  If yes, the symbol
@@ -935,12 +970,7 @@ class ipa_livepatch_engine
 		      break;
 
 		    case EXTERNALIZATION_WEAK:
-		      // drop body
-		      cnode->release_body ();
-		      cnode->reset ();
-		      cnode->body_removed = true;
-		      cnode->analyzed = 0;
-		      DECL_EXTERNAL (cnode->decl) = 1;
+		      weakly_externalize_node (cnode);
 		      break;
 
 		    case EXTERNALIZATION_NONE:
@@ -970,18 +1000,11 @@ class ipa_livepatch_engine
 		switch (e)
 		  {
 		  case EXTERNALIZATION_STRONG:
-		    printf ("Strong externalize %s\n", node->name ());
 		    externalize_node (node);
 		    break;
 
 		  case EXTERNALIZATION_WEAK:
-		    printf ("Weak externalize %s\n", node->name ());
-		    // drop body
-		    node->release_body ();
-		    node->reset ();
-		    node->body_removed = true;
-		    node->analyzed = 0;
-		    DECL_EXTERNAL (cnode->decl) = 1;
+		    weakly_externalize_node (node);
 		    break;
 
 		  case EXTERNALIZATION_NONE:
@@ -1006,28 +1029,17 @@ class ipa_livepatch_engine
 	    symtab_node *node = to_externalize[i].first;
 	    externalization_type ext = to_externalize[i].second;
 
+	    /* If the symbol was already externalized, then skip it.  */
+	    if (externalized.contains (node))
+	      continue;
+
 	    if (ext == EXTERNALIZATION_STRONG)
 	      externalize_node (node);
 	    else if (ext == EXTERNALIZATION_WEAK)
 	      {
 		/* Check if it actually makes sense to do it.  */
 		if (DECL_VISIBILITY (node->decl) == VISIBILITY_DEFAULT)
-		  {
-		    if (cgraph_node *cnode = dyn_cast<cgraph_node *> (node))
-		      {
-			cnode->release_body ();
-			cnode->reset ();
-			cnode->body_removed = true;
-			cnode->definition = 0;
-			DECL_EXTERNAL (cnode->decl) = true;
-		      }
-		    else if (varpool_node *vnode = dyn_cast<varpool_node *> (node))
-		      {
-			// TODO: drop the initializer and declare it as extern.
-			TREE_STATIC (node->decl) = 0;
-			DECL_EXTERNAL (node->decl) = 1;
-		      }
-		  }
+		  weakly_externalize_node (node);
 		else
 		  error_at (DECL_SOURCE_LOCATION (node->decl), 0, "Unable to "
 			    "weakly externalize %s, function is not public "
@@ -1043,6 +1055,9 @@ class ipa_livepatch_engine
     /* Symbols to externalize, that means to be redeclared as a pointer to the
        original variable, or simply to have its body removed.  */
     auto_vec<std::pair<symtab_node *, externalization_type>> to_externalize;
+
+    /* Nodes that were externalized.  */
+    hash_set<symtab_node *> externalized;
 
     /* hash mapping the symbol name (e.g. function name) to attributes in the
        dynsym table.  This means symbols that can be called without doing

@@ -27,12 +27,9 @@ dg-init
 
 # Silence the "dg-with-debuginfo" option.
 proc dg-with-debuginfo { args } {
-    send_user "dg-with-debuginfo args = $args \n\n"
 }
 
 proc lp-link-and-analyze { testname flags default_extra_flags } {
-
-
     send_user "testname: $testname"
 
     set generate_debuginfo_p false
