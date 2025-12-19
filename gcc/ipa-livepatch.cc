@@ -516,13 +516,15 @@ class ipa_livepatch_engine
 			 argv[0], errmsg);
 	  }
 
+	/* Parse the output, do it before waiting the process to finish,
+	 * otherwise it will be interrupted due to full FIFO.  */
+	parse_readelf_output (pex_read_output (pex, false));
+
 	/* Wait for the process to finish.  */
 	int status;
 	int ret_code = 0;
 	if (!pex_get_status (pex, 1, &status))
 	  fatal_error (input_location, "failed to get exit status: %m");
-
-	parse_readelf_output (pex_read_output (pex, false));
 
 	pex_free (pex);
 	pex = NULL;
