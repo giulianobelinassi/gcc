@@ -1879,6 +1879,7 @@ cgraph_node::remove (void)
 {
   bool clone_info_set = false;
   clone_info *info, saved_info;
+
   if (symtab->ipa_clones_dump_file && symtab->cloned_nodes.contains (this))
     fprintf (symtab->ipa_clones_dump_file,
 	     "Callgraph removal;%s;%d;%s;%d;%d\n", asm_name (), order,

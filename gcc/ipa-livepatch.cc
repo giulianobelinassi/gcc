@@ -224,6 +224,7 @@ struct symbol_attributes
 	{ "NUM", STT_NUM },
 	{ "LOOS", STT_LOOS },
 	{ "GNU_IFUNC", STT_GNU_IFUNC },
+	{ "IFUNC", STT_GNU_IFUNC },
 	{ "HIOS", STT_HIOS },
 	{ "LOPROC", STT_LOPROC },
 	{ "HIPROC", STT_HIPROC },
@@ -355,6 +356,112 @@ debug_basic_block (basic_block bb)
     }
   printf("--- end   gimple bb dump ---\n");
 }
+
+static void
+promote_to_public (symtab_node *node)
+{
+  tree decl = node->decl;
+  node->externally_visible = 1;
+  node->forced_by_abi = 1;
+
+  if (cgraph_node *cnode = dyn_cast<cgraph_node *>(node)) {
+    cnode->local = 0;
+  }
+
+  /* Make sure it resolves to having it possibly used by another object file.  */
+  node->resolution = LDPR_PREEMPTED_REG;
+
+  /* Make sure the symbol is public and public visible.  */
+  TREE_PUBLIC (decl) = 1;
+  DECL_VISIBILITY (decl) = VISIBILITY_DEFAULT;
+  DECL_VISIBILITY_SPECIFIED (decl) = 1;
+
+}
+
+bool
+symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FILE *file)
+{
+  bool changed = false;
+
+  /* Do nothing if no extraction was request.  */
+  if (nodes.length() == 0)
+    return false;
+
+  /* Do a DFS for each node to see which nodes can we reach.  This is our
+   * closure.  */
+  for (unsigned i = 0; i < nodes.length(); i++)
+    {
+      auto_vec<symtab_node *> stack; // DFS stack.
+      symtab_node *node = nodes[i];
+
+      /* Promote symbol to public in case it is private, otherwise we may endup
+         removing it because the possibility of no public symbol accessing it.  */
+      promote_to_public (node);
+
+      /* Run DFS.  */
+      stack.safe_push(node);
+      while (!stack.is_empty())
+	{
+	  node = stack.pop();
+	  if (node->aux != NULL)
+	    {
+	      /* Already analyzed.  */
+	      continue;
+	    }
+
+	  if (cgraph_node *cnode = dyn_cast<cgraph_node *>(node))
+	    {
+	      if (cnode->inlined_to)
+		{
+		  /* Seems to only be used during certain passes.  */
+		  if (dump_enabled_p ())
+		    dump_printf (MSG_NOTE, "node %s inlined_to %s\n", cnode->name (),
+			   cnode->inlined_to->name ());
+		  stack.safe_push(cnode->inlined_to);
+		}
+
+	      cgraph_edge *edge;
+	      for (edge = cnode->callees; edge; edge = edge->next_callee)
+		{
+		  /* Forward into each edge.  */
+		  cgraph_node *callee = edge->callee;
+		  stack.safe_push(callee);
+		}
+	    }
+
+	  struct ipa_ref *ref = NULL;
+	  for (unsigned i = 0; node->iterate_reference (i, ref); ++i)
+	    {
+	      /* References to variables.  */
+	      stack.safe_push(ref->referred);
+	    }
+
+	  node->aux = (void *) 1;
+	}
+    }
+
+  /* Remove unreachable nodes.  */
+  symtab_node *node;
+  symtab_node *next = NULL;
+  for (node = first_symbol (); node; node = next)
+    {
+      next = node->next;
+      if (!node->aux)
+	{
+	  if (dump_enabled_p ())
+	    dump_printf (MSG_NOTE, "removing: %s\n", node->dump_name ());
+	  remove_node_safe (node);
+	  changed = true;
+	}
+      else
+	{
+	  node->aux = NULL;
+	}
+    }
+
+  return changed;
+}
+
 
 class ipa_livepatch_engine
 {
@@ -624,6 +731,9 @@ class ipa_livepatch_engine
       /* ... and destroy the context.  */
       pop_gimplify_context (NULL);
 
+      printf("After\n");
+      debug_basic_block (gimple_bb (new_seq));
+
       /* Update SSA names.  */
       update_ssa (TODO_update_ssa);
 
@@ -815,6 +925,10 @@ class ipa_livepatch_engine
 	    .reference = new_node,
 	  };
 
+	  printf ("Before\n");
+	  basic_block bb = gimple_bb (ref->stmt);
+	  debug_basic_block (bb);
+
 	  if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referring))
 	    {
 	      /* Push referring function to global context.  */
@@ -828,6 +942,7 @@ class ipa_livepatch_engine
 	      /* Pop function out of the context.   */
 	      pop_cfun ();
 	    }
+
 	  /* The symbol could have been used as a variable initialization, or is
 	   * being used as a variable reference.  */
 	  if (varpool_node *vnode = dyn_cast<varpool_node *> (ref->referring))
@@ -894,6 +1009,7 @@ class ipa_livepatch_engine
 
       /* remove node.  */
       remove_node_safe (node);
+
       return varpool_node::get (pointer_var);
     }
 
@@ -959,25 +1075,23 @@ class ipa_livepatch_engine
 	   course.  */
 	for (unsigned i = 0; node->iterate_reference (i, ref); ++i)
 	  {
-	    if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referred))
+	    symtab_node *rnode = ref->referred;
+	    /* Get externalization method to see if we can externalize this
+	       symbol, or if we need to propagate further.  */
+	    externalization_type e = get_externalization_method (rnode);
+
+	    switch (e)
 	      {
-		/* Get externalization method to see if we can externalize this
-		   symbol, or if we need to propagate further.  */
-		externalization_type e = get_externalization_method (cnode);
+		case EXTERNALIZATION_STRONG:
+		  externalize_node (rnode);
+		  break;
 
-		switch (e)
-		  {
-		    case EXTERNALIZATION_STRONG:
-		      externalize_node (cnode);
-		      break;
+		case EXTERNALIZATION_WEAK:
+		  weakly_externalize_node (rnode);
+		  break;
 
-		    case EXTERNALIZATION_WEAK:
-		      weakly_externalize_node (cnode);
-		      break;
-
-		    case EXTERNALIZATION_NONE:
-		      run_externalize_to_function (cnode);
-		  }
+		case EXTERNALIZATION_NONE:
+		  run_externalize_to_function (rnode);
 	      }
 	  }
 
