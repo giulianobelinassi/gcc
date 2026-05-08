@@ -41,6 +41,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-iterator.h"
 #include "gimple-walk.h"
 #include "gimple-pretty-print.h"
+#include "gimple-fold.h"
 #include "gimplify.h"
 #include "gimple-ssa.h"
 #include "fold-const.h"
@@ -48,6 +49,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree-ssa-operands.h"
 #include "tree-into-ssa.h"
 #include "tree-ssanames.h"
+#include "tree-phinodes.h"
+
+#include "ssa-iterators.h"
 
 #include "cgraph.h"
 
@@ -55,6 +59,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "diagnostic-core.h"
 #include "intl.h"
 #include "hash-map.h"
+
+#include "print-tree.h"
 
 auto_vec<const char *> gsymbols_to_extract;
 auto_vec<const char *> gsymbols_to_externalize;
@@ -678,6 +684,9 @@ class ipa_livepatch_engine
 	/* Externalization.  */
 	run_externalization_process ();
 
+	/* Update SSA names.  */
+	update_ssa (TODO_update_ssa);
+
 	/* Closure again.  */
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
 
@@ -718,9 +727,15 @@ class ipa_livepatch_engine
       /* ... create the stmt and append it to a new gimple sequence.  */
       gimple *assign_stmt = gimplify_assign (lhs, pointer_deference, &new_seq);
 
+      /* Copy the VUSE from the original stmt to the new one.  */
+      //gimple_set_vuse (assign_stmt, gimple_vuse (stmt));
+
       /* Replace the stmts.  */
       gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
-      gsi_replace_with_seq (&gsi, new_seq, false);
+      gsi_replace_with_seq_vops (&gsi, new_seq);
+
+      /* Update the orginal stmt.  */
+      update_stmt (stmt);
 
       /* Update the references in the callgraph.  */
       symtab_node *referring = new_var_info->referring;
@@ -733,9 +748,6 @@ class ipa_livepatch_engine
 
       printf("After\n");
       debug_basic_block (gimple_bb (new_seq));
-
-      /* Update SSA names.  */
-      update_ssa (TODO_update_ssa);
 
       return true;
     }
@@ -767,8 +779,8 @@ class ipa_livepatch_engine
       gimple_set_lhs (stmt, build_simple_mem_ref (temp_var));
       update_stmt (stmt);
 
-      /* Update SSA names.  */
-      update_ssa (TODO_update_ssa);
+      printf("After\n");
+      debug_basic_block (gimple_bb (stmt));
 
       return true;
     }
@@ -779,9 +791,111 @@ class ipa_livepatch_engine
       struct new_var_content *new_var_info = (struct new_var_content *) data;
       tree pointer_var = new_var_info->pointer_var;
 
-      /* Set rhs to be the a simple move from the pointer rather than the address
-	 take of the original variable.  */
-      gimple_assign_set_rhs1 (stmt, pointer_var);
+      debug_gimple_stmt (stmt);
+
+      if (gcond *cond_stmt = dyn_cast <gcond *> (stmt))
+	{
+	  /* Create temporary variable. */
+	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
+
+	  /* Emit a load of pointer_var to the temporary variable.  */
+	  gimple *load = gimple_build_assign (temp_var, pointer_var);
+
+	  /* Add the new load stmt right before the original stmt.  */
+	  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
+	  gsi_insert_before (&gsi, load, GSI_NEW_STMT);
+	  update_stmt (load);
+
+	  /* Set rhs.  */
+	  gimple_cond_set_rhs (cond_stmt, temp_var);
+	}
+      else if (gphi *phi_stmt = dyn_cast <gphi *> (stmt))
+	{
+	  /* Create temporary variable. */
+	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
+
+	  /* Emit a load of pointer_var to the temporary variable.  */
+	  gimple *load = gimple_build_assign (temp_var, pointer_var);
+
+	  /* Add the new load stmt right before the original stmt.  */
+	  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
+	  gsi_insert_before (&gsi, load, GSI_NEW_STMT);
+	  update_stmt (load);
+
+	  printf ("op:\n");
+	  debug_tree (op);
+
+	  /* Update PHI parameter.  */
+	  for (unsigned i = 0; i < gimple_phi_num_args (phi_stmt); i++)
+	    {
+	      tree arg = gimple_phi_arg_def (phi_stmt, i);
+	      printf ("arg %d:\n", i);
+	      debug_tree (arg);
+
+	      if (TREE_CODE (arg) == ADDR_EXPR)
+		{
+		  tree var = TREE_OPERAND (arg, 0);
+		  if (var == op)
+		    {
+		      /* PHI <&var, ...>, replace &var with klpe_var.  */
+		      SET_PHI_ARG_DEF (phi_stmt, i, temp_var);
+		      printf ("phi_stmt %d argument updated\n", i);
+		    }
+		}
+
+	      debug_gimple_stmt (load);
+	      debug_gimple_stmt (phi_stmt);
+
+	      //exit(1);
+	      //edge e   = gimple_phi_arg_edge (phi_stmt, i);
+	    }
+
+	  /* Set rhs.  */
+	  //gimple_cond_set_rhs (cond_stmt, temp_var);
+
+	  //debug_gimple_stmt (stmt);
+	}
+      else if (gcall *call_stmt = dyn_cast <gcall *> (stmt))
+	{
+	  printf ("gcall: ");
+	  debug_gimple_stmt (stmt);
+
+	  /* Create temporary variable. */
+	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
+
+	  /* Emit a load of pointer_var to the temporary variable.  */
+	  gimple *load = gimple_build_assign (temp_var, pointer_var);
+
+	  /* Add the new load stmt right before the original stmt.  */
+	  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
+	  gsi_insert_before (&gsi, load, GSI_NEW_STMT);
+	  update_stmt (load);
+
+	  debug_tree (op);
+
+	  unsigned nargs = gimple_call_num_args (call_stmt);
+	  for (unsigned i = 0; i < nargs; i++) {
+	    tree arg = gimple_call_arg (call_stmt, i);
+
+	    printf ("debug tree arg %d\n", i);
+	    debug_tree (arg);
+
+	    if (arg == op) {
+	      printf ("Found: ");
+	      debug_tree (arg);
+	      exit(1);
+	    }
+	  }
+	}
+      else
+	{
+	  /* Set rhs to be the a simple move from the pointer rather than the address
+	     take of the original variable.  */
+	  debug_gimple_stmt (stmt);
+	  gimple_assign_set_rhs1 (stmt, pointer_var);
+	}
+
+      debug_gimple_stmt (stmt);
 
       /* Mark stmt as modified.  */
       update_stmt (stmt);
@@ -792,8 +906,8 @@ class ipa_livepatch_engine
 
       referring->create_reference(reference, IPA_REF_ADDR, stmt);
 
-      /* Update SSA names.  */
-      update_ssa (TODO_update_ssa);
+      printf("After\n");
+      debug_basic_block (gimple_bb (stmt));
 
       return true;
     }
@@ -902,10 +1016,15 @@ class ipa_livepatch_engine
       TREE_PUBLIC (pointer_var) = true;
       TREE_USED (pointer_var) = true;
 
+
       /* Announce the new variable to symtab.  */
       varpool_node::add (pointer_var);
       varpool_node *new_node = varpool_node::get (pointer_var);
       new_node->force_output = true;
+
+      /* Copy TLS bit in case this node is a variable.  */
+      if (varpool_node *vnode = dyn_cast<varpool_node *> (node))
+	new_node->tls_model = vnode->tls_model;
 
       /* Make sure the node is marked as analyzed for
 	 `remove_unreferenced_decls` not catch it as unreferenced.  */
@@ -913,6 +1032,8 @@ class ipa_livepatch_engine
 
       /* Create a deference of the new pointer variable.  */
       tree pointer_deference = build1 (INDIRECT_REF, var_type, pointer_var);
+
+      debug_tree (pointer_deference);
 
       /* Rewire references to the old variable to the new one.  */
       struct ipa_ref *ref = NULL;
@@ -925,9 +1046,12 @@ class ipa_livepatch_engine
 	    .reference = new_node,
 	  };
 
-	  printf ("Before\n");
-	  basic_block bb = gimple_bb (ref->stmt);
-	  debug_basic_block (bb);
+	  if (ref->stmt)
+	    {
+	      printf ("Before\n");
+	      basic_block bb = gimple_bb (ref->stmt);
+	      debug_basic_block (bb);
+	    }
 
 	  if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referring))
 	    {
@@ -996,9 +1120,6 @@ class ipa_livepatch_engine
 	      /* Fix cgraph structure.  */
 	      node->create_reference (new_node, IPA_REF_LOAD, load);
 	      node->create_indirect_edge (new_call_stmt, 0, profile_count::uninitialized());
-
-	      /* Update SSA names.  */
-	      update_ssa (TODO_update_ssa);
 
 	      pop_cfun ();
 	    }
