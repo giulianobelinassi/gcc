@@ -351,16 +351,19 @@ tokenize_string_var (const char *var, const char *needle)
 }
 
 static void
-debug_basic_block (basic_block bb)
+debug_basic_block (basic_block bb, FILE *dump = stdout)
 {
-  printf("--- begin gimple bb dump ---\n");
+  if (dump == NULL)
+    return;
+
+  fprintf(dump, "--- begin gimple bb dump ---\n");
   gimple_stmt_iterator gsi;
   for (gsi = gsi_start_bb (bb); !gsi_end_p (gsi); gsi_next (&gsi))
     {
       gimple *stmt = gsi_stmt (gsi);
-      debug_gimple_stmt (stmt);
+      print_gimple_stmt (dump, stmt, 0);
     }
-  printf("--- end   gimple bb dump ---\n");
+  fprintf(dump, "--- end   gimple bb dump ---\n");
 }
 
 static void
@@ -420,8 +423,8 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
 	      if (cnode->inlined_to)
 		{
 		  /* Seems to only be used during certain passes.  */
-		  if (dump_enabled_p ())
-		    dump_printf (MSG_NOTE, "node %s inlined_to %s\n", cnode->name (),
+		  if (dump_file)
+		    fprintf (dump_file, "node %s inlined_to %s\n", cnode->name (),
 			   cnode->inlined_to->name ());
 		  stack.safe_push(cnode->inlined_to);
 		}
@@ -454,8 +457,8 @@ symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FIL
       next = node->next;
       if (!node->aux)
 	{
-	  if (dump_enabled_p ())
-	    dump_printf (MSG_NOTE, "removing: %s\n", node->dump_name ());
+	  if (dump_file)
+	    fprintf (dump_file, "removing: %s\n", node->dump_name ());
 	  remove_node_safe (node);
 	  changed = true;
 	}
@@ -654,8 +657,8 @@ class ipa_livepatch_engine
 
 	for (const char *path : targets)
 	  {
-	    if (dump_enabled_p ())
-	      dump_printf (MSG_NOTE, "load_livepatch_targets\n");
+	    if (dump_file)
+	      fprintf (dump_file, "load_livepatch_targets\n");
 	    load_single_livepatch_target(path);
 	  }
 
@@ -691,7 +694,9 @@ class ipa_livepatch_engine
 	    if (fun->decl != (void *)0xa5a5a5a5a5a5a5a5)
 	      {
 		push_cfun (fun);
-		printf ("SSA updating %s\n", IDENTIFIER_POINTER (DECL_NAME (fun->decl)));
+		if (dump_file)
+		  fprintf (dump_file, "SSA updating %s\n",
+			   IDENTIFIER_POINTER (DECL_NAME (fun->decl)));
 		update_ssa (TODO_update_ssa);
 		pop_cfun ();
 	      }
@@ -711,6 +716,7 @@ class ipa_livepatch_engine
       tree pointer_deference;
       symtab_node *referring;
       symtab_node *reference;
+      tree old_decl;
     };
 
     static bool
@@ -791,8 +797,11 @@ class ipa_livepatch_engine
       /* ... and destroy the context.  */
       pop_gimplify_context (NULL);
 
-      printf("After\n");
-      debug_basic_block (gimple_bb (new_seq));
+      if (dump_file)
+	{
+	  fprintf (dump_file, "After\n");
+	  debug_basic_block (gimple_bb (new_seq), dump_file);
+	}
 
       return true;
     }
@@ -826,8 +835,11 @@ class ipa_livepatch_engine
 	  /* Update changed stmt.  */
 	  update_stmt (stmt);
 
-	  printf("After\n");
-	  debug_basic_block (gimple_bb (stmt));
+	  if (dump_file)
+	    {
+	      fprintf(dump_file, "After\n");
+	      debug_basic_block (gimple_bb (stmt), dump_file);
+	    }
 	  return true;
 	}
       else
@@ -863,8 +875,11 @@ class ipa_livepatch_engine
       //gimple_set_lhs (stmt, build_simple_mem_ref (temp_var));
       //update_stmt (stmt);
 
-      printf("After\n");
-      debug_basic_block (gimple_bb (stmt));
+      if (dump_file)
+	{
+	  fprintf (dump_file, "After\n");
+	  debug_basic_block (gimple_bb (stmt), dump_file);
+	}
 
       return true;
     }
@@ -893,7 +908,7 @@ class ipa_livepatch_engine
 	}
       else if (gphi *phi_stmt = dyn_cast <gphi *> (stmt))
 	{
-#if 0
+#if 0 // Causing a crash for now.
 	  /* Create temporary variable. */
 	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
 
@@ -925,34 +940,23 @@ class ipa_livepatch_engine
 	}
       else if (gcall *call_stmt = dyn_cast <gcall *> (stmt))
 	{
-	  printf ("gcall: ");
-	  debug_gimple_stmt (stmt);
+	  /* In case the tree walk_tree is looking isn't what we are interested
+	     in, then simply bail out.  */
+	  if (op != new_var_info->old_decl)
+	    return true;
 
-	  /* Create temporary variable. */
-	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
-
-	  /* Emit a load of pointer_var to the temporary variable.  */
-	  gimple *load = gimple_build_assign (temp_var, pointer_var);
-
-	  /* Add the new load stmt right before the original stmt.  */
-	  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
-	  gsi_insert_before (&gsi, load, GSI_NEW_STMT);
-	  update_stmt (load);
-
-	  //debug_tree (op);
-
+	  /* Look for the parameters that references the variable we are
+	     externalizing.  */
 	  unsigned nargs = gimple_call_num_args (call_stmt);
 	  for (unsigned i = 0; i < nargs; i++) {
 	    tree arg = gimple_call_arg (call_stmt, i);
 
-	    //printf ("debug tree arg %d\n", i);
-	    //debug_tree (arg);
-
-	    if (arg == op) {
-	      //printf ("Found: ");
-	      //debug_tree (arg);
-	      //exit(1);
-	    }
+	    /* If the argument matches what is in the function call parameter...  */
+	    if (arg == unk)
+	      {
+		/* Then replace it.  */
+		gimple_call_set_arg (call_stmt, i, new_var_info->pointer_var);
+	      }
 	  }
 	}
       else
@@ -971,8 +975,11 @@ class ipa_livepatch_engine
 
       referring->create_reference(reference, IPA_REF_ADDR, stmt);
 
-      printf("After\n");
-      debug_basic_block (gimple_bb (stmt));
+      if (dump_file)
+	{
+	  fprintf (dump_file, "After\n");
+	  debug_basic_block (gimple_bb (stmt), dump_file);
+	}
 
       return true;
     }
@@ -1060,8 +1067,8 @@ class ipa_livepatch_engine
       const char *var_name = IDENTIFIER_POINTER (DECL_NAME (node->decl));
 
       /* Inspect it.  */
-      if (dump_enabled_p ())
-	dump_printf (MSG_NOTE, "About to externalize: %s\n", var_name);
+      if (dump_file)
+	fprintf (dump_file, "About to externalize: %s\n", var_name);
 
       tree var_type = TREE_TYPE (node->decl);
       tree pointer_type = build_pointer_type (var_type);
@@ -1109,13 +1116,17 @@ class ipa_livepatch_engine
 	    .pointer_deference = pointer_deference,
 	    .referring = ref->referring,
 	    .reference = new_node,
+	    .old_decl = node->decl,
 	  };
 
 	  if (ref->stmt)
 	    {
-	      printf ("Before\n");
-	      basic_block bb = gimple_bb (ref->stmt);
-	      debug_basic_block (bb);
+	      if (dump_file)
+		{
+		  fprintf (dump_file, "Before\n");
+		  basic_block bb = gimple_bb (ref->stmt);
+		  debug_basic_block (bb,  dump_file);
+		}
 	    }
 
 	  if (cgraph_node *cnode = dyn_cast<cgraph_node *> (ref->referring))
@@ -1137,8 +1148,14 @@ class ipa_livepatch_engine
 	   * being used as a variable reference.  */
 	  if (varpool_node *vnode = dyn_cast<varpool_node *> (ref->referring))
 	    {
-	      tree init = DECL_INITIAL (vnode->decl);
-	      walk_tree (&init, tree_walk_externalizer, (void *) &new_var_info, NULL);
+	      /* In some initializers, the address of the variable is used to
+	       * initialize itself (like glibc main_arena).  In that case we
+	       * need to do nothing.  */
+	      if (ref->referring != ref->referred)
+		{
+		  tree init = DECL_INITIAL (vnode->decl);
+		  walk_tree (&init, tree_walk_externalizer, (void *) &new_var_info, NULL);
+		}
 	    }
 	}
 
