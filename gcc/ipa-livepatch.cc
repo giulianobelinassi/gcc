@@ -388,7 +388,7 @@ promote_to_public (symtab_node *node)
 }
 
 bool
-symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes, FILE *file)
+symbol_table::remove_unreachable_nodes_from(const vec<symtab_node *> &nodes)
 {
   bool changed = false;
 
@@ -678,7 +678,7 @@ class ipa_livepatch_engine
 	populate_extract_and_externalize ();
 
 	/* Closure.  */
-	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
+	symtab->remove_unreachable_nodes_from (to_extract);
 
 	/* Reinitialize the extract and externalize vectors because some.
 	   nodes may have been removed.  */
@@ -691,7 +691,7 @@ class ipa_livepatch_engine
 	update_ssa_of_modified_functions ();
 
 	/* Closure again.  */
-	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
+	symtab->remove_unreachable_nodes_from (to_extract);
 
 	return 0;
       }
