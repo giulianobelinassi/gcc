@@ -739,19 +739,6 @@ class ipa_livepatch_engine
 
       /* Create a gimple_seq to hold our new stmt.  */
       gimple_seq new_seq = NULL;
-
-#if 0
-      printf ("----------\n");
-      printf ("XXX\n ");
-      debug_tree(rhs);
-      printf ("YYY\n ");
-      debug_tree(arg);
-      //debug_tree (pointer_deference);
-      printf ("ZZZ\n ");
-      debug_gimple_stmt (stmt);
-      printf ("----------\n");
-#endif
-
       gimple *assign_stmt;
 
       if (TREE_CODE (arg) == COMPONENT_REF)
@@ -823,7 +810,6 @@ class ipa_livepatch_engine
 	  tree field = TREE_OPERAND (arg, 1);
 	  tree component = build3 (COMPONENT_REF,
 				   TREE_TYPE (field),
-				   //pointer_deference,
 				   build_simple_mem_ref (pointer_var),
 				   field,
 				   NULL_TREE);
@@ -835,12 +821,8 @@ class ipa_livepatch_engine
 	  /* Update changed stmt.  */
 	  update_stmt (stmt);
 
-	  if (dump_file)
-	    {
-	      fprintf(dump_file, "After\n");
-	      debug_basic_block (gimple_bb (stmt), dump_file);
-	    }
-	  return true;
+	  /* The load stmt is the original stmt itself.  */
+	  load = stmt;
 	}
       else
 	{
@@ -861,19 +843,16 @@ class ipa_livepatch_engine
 
 	  /* Replace the lhs of the original stmt with the temp variable.  */
 	  gimple_set_lhs (stmt, build_simple_mem_ref (temp_var));
-	  update_stmt (stmt);
 	}
 
+      /* Update the updated stmt.  */
+      update_stmt (stmt);
 
       /* Update the references in the callgraph.  */
       symtab_node *referring = new_var_info->referring;
       symtab_node *reference = new_var_info->reference;
 
       referring->create_reference(reference, IPA_REF_LOAD, load);
-
-      /* Replace the lhs of the original stmt with the temp variable.  */
-      //gimple_set_lhs (stmt, build_simple_mem_ref (temp_var));
-      //update_stmt (stmt);
 
       if (dump_file)
 	{
@@ -905,38 +884,6 @@ class ipa_livepatch_engine
 
 	  /* Set rhs.  */
 	  gimple_cond_set_rhs (cond_stmt, temp_var);
-	}
-      else if (gphi *phi_stmt = dyn_cast <gphi *> (stmt))
-	{
-#if 0 // Causing a crash for now.
-	  /* Create temporary variable. */
-	  tree temp_var = make_ssa_name (TREE_TYPE (pointer_var));
-
-	  /* Emit a load of pointer_var to the temporary variable.  */
-	  gimple *load = gimple_build_assign (temp_var, pointer_var);
-
-	  /* Add the new load stmt right before the original stmt.  */
-	  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
-
-	  gsi_insert_before (&gsi, load, GSI_NEW_STMT);
-	  update_stmt (load);
-
-	  /* Update PHI parameter.  */
-	  for (unsigned i = 0; i < gimple_phi_num_args (phi_stmt); i++)
-	    {
-	      tree arg = gimple_phi_arg_def (phi_stmt, i);
-	      if (TREE_CODE (arg) == ADDR_EXPR)
-		{
-		  tree var = TREE_OPERAND (arg, 0);
-		  if (var == op)
-		    {
-		      /* PHI <&var, ...>, replace &var with klpe_var.  */
-		      SET_PHI_ARG_DEF (phi_stmt, i, temp_var);
-		    }
-		}
-
-	    }
-#endif
 	}
       else if (gcall *call_stmt = dyn_cast <gcall *> (stmt))
 	{
