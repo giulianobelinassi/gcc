@@ -687,20 +687,8 @@ class ipa_livepatch_engine
 	/* Externalization.  */
 	run_externalization_process ();
 
-	/* Update SSA names.  */
-	for (struct function *fun : modified_functions)
-	  {
-	    /* FIXME: Properly check if the function was removed.  */
-	    if (fun->decl != (void *)0xa5a5a5a5a5a5a5a5)
-	      {
-		push_cfun (fun);
-		if (dump_file)
-		  fprintf (dump_file, "SSA updating %s\n",
-			   IDENTIFIER_POINTER (DECL_NAME (fun->decl)));
-		update_ssa (TODO_update_ssa);
-		pop_cfun ();
-	      }
-	  }
+	/* Update SSA of functions we modified.  */
+	update_ssa_of_modified_functions ();
 
 	/* Closure again.  */
 	symtab->remove_unreachable_nodes_from (to_extract, nullptr);
@@ -1080,7 +1068,8 @@ class ipa_livepatch_engine
 	    {
 	      /* Push referring function to global context.  */
 	      push_cfun (cnode->get_fun ());
-	      modified_functions.add (cnode->get_fun ());
+	      printf ("Modified function: %s\n", cnode->name ());
+	      modified_functions.add (cnode);
 
 	      /* Walk through the stmts.  */
 	      //debug_gimple_stmt (ref->stmt);
@@ -1116,7 +1105,8 @@ class ipa_livepatch_engine
 
 	      /* Push function context.  We will modify the function.  */
 	      push_cfun (node->get_fun ());
-	      modified_functions.add (node->get_fun ());
+	      printf ("Modified function: %s\n", cnode->name ());
+	      modified_functions.add (node);
 
 	      /* Get call stmt.  */
 	      gcall *call_stmt = edge->call_stmt;
@@ -1317,6 +1307,27 @@ class ipa_livepatch_engine
 	  }
       }
 
+    void update_ssa_of_modified_functions (void)
+      {
+	/* Update SSA names.  */
+	for (cgraph_node *cnode : modified_functions)
+	  {
+	    /* If the decl of the function was somehow released, then
+	       do not bother updating any SSA value.  */
+	    if (cnode->decl == NULL_TREE)
+	      continue;
+
+	    struct function *fun = DECL_STRUCT_FUNCTION (cnode->decl);
+
+	    push_cfun (fun);
+	    if (dump_file)
+	      fprintf (dump_file, "SSA updating %s\n",
+		       IDENTIFIER_POINTER (DECL_NAME (fun->decl)));
+	    update_ssa (TODO_update_ssa);
+	    pop_cfun ();
+	  }
+      }
+
     /* Symbols to extract.  */
     auto_vec<symtab_node *> to_extract;
 
@@ -1345,7 +1356,7 @@ class ipa_livepatch_engine
     hash_set<symtab_node *> analyzed_nodes;
 
     /* Set of functions that got modified.  */
-    hash_set<struct function *> modified_functions;
+    hash_set<cgraph_node *> modified_functions;
 };
 
 
@@ -1395,13 +1406,6 @@ public:
     }
   unsigned int execute (function *) final override
     {
-#if 0
-      FILE *outp = fopen ("/tmp/symtab.dot", "w");
-      gcc_assert (outp);
-      symtab->dump_graphviz(outp);
-      fclose (outp);
-#endif
-
       ipa_livepatch_engine lp;
       return lp.execute();
     }
