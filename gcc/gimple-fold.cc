@@ -3632,469 +3632,538 @@ gimple_fold_builtin_sprintf_chk (gimple_stmt_iterator *gsi,
   fold_stmt (gsi);
   return true;
 }
-enum length_enum {
-  PRINTF_LEN_EMPTY,
-  PRINTF_LEN_hh,
-  PRINTF_LEN_h,
-  PRINTF_LEN_l,
-  PRINTF_LEN_ll,
-  PRINTF_LEN_j,
-  PRINTF_LEN_z,
-  PRINTF_LEN_t,
-  PRINTF_LEN_L,
-};
 
-enum specifier_enum {
-  PRINTF_SPEC_d,
-  PRINTF_SPEC_i,
-  PRINTF_SPEC_u,
-  PRINTF_SPEC_o,
-  PRINTF_SPEC_x,
-  PRINTF_SPEC_X,
-  PRINTF_SPEC_f,
-  PRINTF_SPEC_F,
-  PRINTF_SPEC_e,
-  PRINTF_SPEC_E,
-  PRINTF_SPEC_g,
-  PRINTF_SPEC_G,
-  PRINTF_SPEC_a,
-  PRINTF_SPEC_A,
-  PRINTF_SPEC_c,
-  PRINTF_SPEC_s,
-  PRINTF_SPEC_p,
-  PRINTF_SPEC_n,
-  PRINTF_SPEC_PERCENT,
-};
-
-struct printf_format_token
+class parsed_printf_fmt
 {
-  /* Flags:  */
-  bool minus : 1;
-  bool plus  : 1;
-  bool space : 1;
-  bool sharp : 1;
-  bool zero  : 1;
+public:
+  enum length_enum {
+    PRINTF_LEN_EMPTY,
+    PRINTF_LEN_hh,
+    PRINTF_LEN_h,
+    PRINTF_LEN_l,
+    PRINTF_LEN_ll,
+    PRINTF_LEN_j,
+    PRINTF_LEN_z,
+    PRINTF_LEN_t,
+    PRINTF_LEN_L,
+  };
 
-  /* Width:  */
-  unsigned int w_number;
-  bool have_w_number : 1;
-  bool w_star : 1;
+  enum specifier_enum {
+    PRINTF_SPEC_d,
+    PRINTF_SPEC_i,
+    PRINTF_SPEC_u,
+    PRINTF_SPEC_o,
+    PRINTF_SPEC_x,
+    PRINTF_SPEC_X,
+    PRINTF_SPEC_f,
+    PRINTF_SPEC_F,
+    PRINTF_SPEC_e,
+    PRINTF_SPEC_E,
+    PRINTF_SPEC_g,
+    PRINTF_SPEC_G,
+    PRINTF_SPEC_a,
+    PRINTF_SPEC_A,
+    PRINTF_SPEC_c,
+    PRINTF_SPEC_s,
+    PRINTF_SPEC_p,
+    PRINTF_SPEC_n,
+    PRINTF_SPEC_PERCENT,
+  };
 
-  /* Precision:  */
-  unsigned int p_number;
-  bool have_p_number : 1;
-  bool p_star : 1;
+  /* We represent printf format strings as the following regular-expression:
 
-  /* Length:  */
-  enum length_enum length;
+     ([prefix](%[flags][width][.precision][length]conversion)?)*
 
-  /* Specifier:  */
-  enum specifier_enum specifier;
+     which cover all possible format strings.  Constant strings are represented
+     as a single <prefix> with the %[...] being empty.
 
-  void print(FILE *stream)
+   */
+
+  struct printf_format_slice
+  {
+    const char *prefix_slice;
+    int prefix_len;
+
+    /* Flags:  */
+    bool minus : 1;
+    bool plus  : 1;
+    bool space : 1;
+    bool sharp : 1;
+    bool zero  : 1;
+
+    /* Width:  */
+    tree w_number;
+    bool have_w_number : 1;
+    bool w_star : 1;
+
+    /* Precision:  */
+    tree p_number;
+    bool have_p_number : 1;
+    bool p_star : 1;
+
+    /* Length:  */
+    enum length_enum length;
+
+    /* Specifier:  */
+    enum specifier_enum specifier;
+
+    /* Parameter passed to printf.  */
+    tree parameter;
+
+    void print(FILE *stream)
+      {
+	fprintf(stream, "%.*s", prefix_len, prefix_slice);
+
+	fprintf(stream, "%%");
+
+	if (minus)
+	  fprintf(stream, "-");
+
+	if (plus)
+	  fprintf(stream, "+");
+
+	if (space)
+	  fprintf(stream, " ");
+
+	if (sharp)
+	  fprintf(stream, "#");
+
+	if (zero)
+	  fprintf(stream, "0");
+
+	/* Print the Width field.  */
+
+	if (have_w_number)
+	  {
+	    HOST_WIDE_INT value = TREE_INT_CST_LOW (w_number);
+	    fprintf(stream, "%lu", value);
+	  }
+	if (w_star)
+	  fprintf(stream, "*");
+
+	/* Print the precision field.  */
+	if (have_p_number)
+	  {
+	    HOST_WIDE_INT value = TREE_INT_CST_LOW (p_number);
+	    fprintf(stream, ".%lu", value);
+	  }
+
+	if (p_star)
+	  fprintf(stream, ".*");
+
+	/* Print the length field.  */
+	switch (length)
+	  {
+	    case PRINTF_LEN_EMPTY:
+	      break;
+
+	    case PRINTF_LEN_hh:
+	      fprintf(stream, "hh");
+	      break;
+
+	    case PRINTF_LEN_h:
+	      fprintf(stream, "h");
+	      break;
+
+	    case PRINTF_LEN_l:
+	      fprintf(stream, "l");
+	      break;
+
+	    case PRINTF_LEN_ll:
+	      fprintf(stream, "ll");
+	      break;
+
+	    case PRINTF_LEN_j:
+	      fprintf(stream, "j");
+	      break;
+
+	    case PRINTF_LEN_z:
+	      fprintf(stream, "z");
+	      break;
+
+	    case PRINTF_LEN_t:
+	      fprintf(stream, "h");
+	      break;
+
+	    case PRINTF_LEN_L:
+	      fprintf(stream, "L");
+	      break;
+	  }
+
+	switch (specifier)
+	  {
+	    case PRINTF_SPEC_d:
+	      fprintf(stream, "d");
+	      break;
+
+	    case PRINTF_SPEC_i:
+	      fprintf(stream, "i");
+	      break;
+
+	    case PRINTF_SPEC_u:
+	      fprintf(stream, "u");
+	      break;
+
+	    case PRINTF_SPEC_o:
+	      fprintf(stream, "o");
+	      break;
+
+	    case PRINTF_SPEC_x:
+	      fprintf(stream, "x");
+	      break;
+
+	    case PRINTF_SPEC_X:
+	      fprintf(stream, "X");
+	      break;
+
+	    case PRINTF_SPEC_f:
+	      fprintf(stream, "f");
+	      break;
+
+	    case PRINTF_SPEC_F:
+	      fprintf(stream, "F");
+	      break;
+
+	    case PRINTF_SPEC_e:
+	      fprintf(stream, "e");
+	      break;
+
+	    case PRINTF_SPEC_E:
+	      fprintf(stream, "E");
+	      break;
+
+	    case PRINTF_SPEC_g:
+	      fprintf(stream, "g");
+	      break;
+
+	    case PRINTF_SPEC_G:
+	      fprintf(stream, "G");
+	      break;
+
+	    case PRINTF_SPEC_a:
+	      fprintf(stream, "a");
+	      break;
+
+	    case PRINTF_SPEC_A:
+	      fprintf(stream, "A");
+	      break;
+
+	    case PRINTF_SPEC_c:
+	      fprintf(stream, "c");
+	      break;
+
+	    case PRINTF_SPEC_s:
+	      fprintf(stream, "s");
+	      break;
+
+	    case PRINTF_SPEC_p:
+	      fprintf(stream, "p");
+	      break;
+
+	    case PRINTF_SPEC_n:
+	      fprintf(stream, "n");
+	      break;
+
+	    case PRINTF_SPEC_PERCENT:
+	      fprintf(stream, "%%");
+	      break;
+	  }
+
+      }
+  };
+
+  static unsigned _atoi_ref(const char **str)
+  {
+    unsigned i = 0;
+    while (ISDIGIT (**str))
+      i = i * 10 + (unsigned)(*((*str)++) - '0');
+
+    return i;
+  }
+
+  parsed_printf_fmt(gcall *stmt)
+      : escaped(false)
     {
-      fprintf(stream, "%%");
+      formats.reserve(8);
 
-      if (minus)
-	fprintf(stream, "-");
+      const char *fmt_str = c_getstr (gimple_call_arg (stmt, 1));
+      int i = 2; /* First parameter after the format string.  */
 
-      if (plus)
-	fprintf(stream, "+");
-
-      if (space)
-	fprintf(stream, " ");
-
-      if (sharp)
-	fprintf(stream, "#");
-
-      if (zero)
-	fprintf(stream, "0");
-
-      /* Print the Width field.  */
-
-      if (have_w_number)
-	fprintf(stream, "%u", w_number);
-      if (w_star)
-	fprintf(stream, "*");
-
-      /* Print the precision field.  */
-      if (have_p_number)
-	fprintf(stream, ".%u", p_number);
-
-      if (p_star)
-	fprintf(stream, ".*");
-
-      /* Print the length field.  */
-      switch (length)
+      while (*fmt_str != '\0')
 	{
-	  case PRINTF_LEN_EMPTY:
-	    break;
+	  struct printf_format_slice f = {};
 
-	  case PRINTF_LEN_hh:
-	    fprintf(stream, "hh");
-	    break;
+	  /* Find the '%' token, or a pointer to the end '\0' character.  */
+	  const char *percent = strchrnul(fmt_str, '%');
+	  int before_percent_n = (int) (percent - fmt_str);
 
-	  case PRINTF_LEN_h:
-	    fprintf(stream, "h");
-	    break;
+	  f.prefix_slice = fmt_str;
+	  f.prefix_len = before_percent_n;
 
-	  case PRINTF_LEN_l:
-	    fprintf(stream, "l");
-	    break;
+	  fmt_str += before_percent_n;
 
-	  case PRINTF_LEN_ll:
-	    fprintf(stream, "ll");
-	    break;
+	  /* fmt_str must match percent.  */
+	  gcc_assert (fmt_str == percent);
 
-	  case PRINTF_LEN_j:
-	    fprintf(stream, "j");
-	    break;
-
-	  case PRINTF_LEN_z:
-	    fprintf(stream, "z");
-	    break;
-
-	  case PRINTF_LEN_t:
-	    fprintf(stream, "h");
-	    break;
-
-	  case PRINTF_LEN_L:
-	    fprintf(stream, "L");
-	    break;
-	}
-
-      switch (specifier)
-	{
-	  case PRINTF_SPEC_d:
-	    fprintf(stream, "d");
-	    break;
-
-	  case PRINTF_SPEC_i:
-	    fprintf(stream, "i");
-	    break;
-
-	  case PRINTF_SPEC_u:
-	    fprintf(stream, "u");
-	    break;
-
-	  case PRINTF_SPEC_o:
-	    fprintf(stream, "o");
-	    break;
-
-	  case PRINTF_SPEC_x:
-	    fprintf(stream, "x");
-	    break;
-
-	  case PRINTF_SPEC_X:
-	    fprintf(stream, "X");
-	    break;
-
-	  case PRINTF_SPEC_f:
-	    fprintf(stream, "f");
-	    break;
-
-	  case PRINTF_SPEC_F:
-	    fprintf(stream, "F");
-	    break;
-
-	  case PRINTF_SPEC_e:
-	    fprintf(stream, "e");
-	    break;
-
-	  case PRINTF_SPEC_E:
-	    fprintf(stream, "E");
-	    break;
-
-	  case PRINTF_SPEC_g:
-	    fprintf(stream, "g");
-	    break;
-
-	  case PRINTF_SPEC_G:
-	    fprintf(stream, "G");
-	    break;
-
-	  case PRINTF_SPEC_a:
-	    fprintf(stream, "a");
-	    break;
-
-	  case PRINTF_SPEC_A:
-	    fprintf(stream, "A");
-	    break;
-
-	  case PRINTF_SPEC_c:
-	    fprintf(stream, "c");
-	    break;
-
-	  case PRINTF_SPEC_s:
-	    fprintf(stream, "s");
-	    break;
-
-	  case PRINTF_SPEC_p:
-	    fprintf(stream, "p");
-	    break;
-
-	  case PRINTF_SPEC_n:
-	    fprintf(stream, "n");
-	    break;
-
-	  case PRINTF_SPEC_PERCENT:
-	    fprintf(stream, "%%");
-	    break;
-	}
-
-    }
-};
-
-static unsigned _atoi_ref(const char **str)
-{
-  unsigned i = 0;
-  while (ISDIGIT (**str))
-    i = i * 10 + (unsigned)(*((*str)++) - '0');
-
-  return i;
-}
-
-static void
-parse_single_format (const char *fmt_str)
-{
-
-  while (*fmt_str != '\0')
-    {
-      /* Find the '%' token, or a pointer to the end '\0' character.  */
-      const char *percent = strchrnul(fmt_str, '%');
-
-      unsigned before_percent_n = (unsigned) (percent - fmt_str);
-      for (unsigned i = 0; i < before_percent_n; i++)
-	putchar (*fmt_str++);
-
-      /* fmt_str must match percent.  */
-      gcc_assert (fmt_str == percent);
-
-      /* We should now be at '%', or at a '\0' character.  */
-      if (*fmt_str == '%')
-	{
-	  struct printf_format_token f = {};
-	  /* format specifier: %[flags][width][.precision][length]conversion.  */
-
-	  /* Parse [flags].  */
-	  bool stop = false;
-	  do
+	  /* We should now be at '%', or at a '\0' character.  */
+	  if (*fmt_str == '%')
 	    {
-	    ++fmt_str;
+	      /* format specifier: %[flags][width][.precision][length]conversion.  */
 
-	    switch (*fmt_str)
-	      {
-	      case '-':
-		f.minus = true;
-		break;
+	      /* Parse [flags].  */
+	      bool stop = false;
+	      do
+		{
+		++fmt_str;
 
-	      case '+':
-		f.plus = true;
-		break;
+		switch (*fmt_str)
+		  {
+		  case '-':
+		    f.minus = true;
+		    break;
 
-	      case ' ':
-		f.space = true;
-		break;
+		  case '+':
+		    f.plus = true;
+		    break;
 
-	      case '#':
-		f.sharp = true;
-		break;
+		  case ' ':
+		    f.space = true;
+		    break;
 
-	      case '0':
-		f.zero = true;
-		break;
+		  case '#':
+		    f.sharp = true;
+		    break;
 
-	      default:
-		stop = true;
-		break;
-	      }
-	    } while (!stop);
+		  case '0':
+		    f.zero = true;
+		    break;
 
-	  /* Parse [width].  */
-	  if (ISDIGIT (*fmt_str))
-	    {
-	      /* Parse number.  */
-	      f.have_w_number = true;
-	      f.w_number = _atoi_ref (&fmt_str);
-	    }
-	  else if (*fmt_str == '*')
-	    {
-	      /* TODO: We need to get the argument from printf.  */
-	      f.w_star = true;
-	      ++fmt_str;
-	    }
+		  default:
+		    stop = true;
+		    break;
+		  }
+		} while (!stop);
 
-	  /* Parse [.precision].  */
-	  if (*fmt_str == '.')
-	    {
-	      ++fmt_str;
+	      /* Parse [width].  */
 	      if (ISDIGIT (*fmt_str))
 		{
-		  f.have_p_number = true;
-		  f.p_number = _atoi_ref (&fmt_str);
+		  /* Parse number.  */
+		  f.have_w_number = true;
+		  f.w_number = build_int_cstu (unsigned_type_node, _atoi_ref (&fmt_str));
 		}
 	      else if (*fmt_str == '*')
 		{
-		  /* TODO: We need to get the argument from printf.  */
-		  f.p_star = true;
+		  f.w_star = true;
+		  f.w_number = gimple_call_arg (stmt, i++);
 		  ++fmt_str;
 		}
-	    }
 
-	  /* Parse [length].  */
-	  switch (*fmt_str)
-	    {
-	    case 'h':
-	      f.length = PRINTF_LEN_h;
-	      ++fmt_str;
-
-	      /* Check if the next token is 'h' again.  */
-	      if (*fmt_str == 'h')
+	      /* Parse [.precision].  */
+	      if (*fmt_str == '.')
 		{
 		  ++fmt_str;
-		  f.length = PRINTF_LEN_hh;
+		  if (ISDIGIT (*fmt_str))
+		    {
+		      f.have_p_number = true;
+		      f.p_number = build_int_cstu (unsigned_type_node, _atoi_ref (&fmt_str));
+		    }
+		  else if (*fmt_str == '*')
+		    {
+		      /* TODO: We need to get the argument from printf.  */
+		      f.p_star = true;
+		      f.p_number = build_int_cstu (unsigned_type_node, gimple_call_arg (stmt, i++));
+		      ++fmt_str;
+		    }
 		}
-	      break;
 
-	    case 'l':
-	      f.length = PRINTF_LEN_l;
-	      ++fmt_str;
-
-	      /* Check if the next token is 'l' again.  */
-	      if (*fmt_str == 'l')
+	      /* Parse [length].  */
+	      switch (*fmt_str)
 		{
+		case 'h':
+		  f.length = PRINTF_LEN_h;
 		  ++fmt_str;
-		  f.length = PRINTF_LEN_ll;
+
+		  /* Check if the next token is 'h' again.  */
+		  if (*fmt_str == 'h')
+		    {
+		      ++fmt_str;
+		      f.length = PRINTF_LEN_hh;
+		    }
+		  break;
+
+		case 'l':
+		  f.length = PRINTF_LEN_l;
+		  ++fmt_str;
+
+		  /* Check if the next token is 'l' again.  */
+		  if (*fmt_str == 'l')
+		    {
+		      ++fmt_str;
+		      f.length = PRINTF_LEN_ll;
+		    }
+		  break;
+
+		case 'j':
+		  f.length = PRINTF_LEN_j;
+		  ++fmt_str;
+		  break;
+
+		case 'z':
+		  f.length = PRINTF_LEN_z;
+		  ++fmt_str;
+		  break;
+
+		case 't':
+		  f.length = PRINTF_LEN_t;
+		  ++fmt_str;
+		  break;
+
+		case 'L':
+		  f.length = PRINTF_LEN_L;
+		  ++fmt_str;
+		  break;
+
+		default:
+		  break;
 		}
-	      break;
 
-	    case 'j':
-	      f.length = PRINTF_LEN_j;
-	      ++fmt_str;
-	      break;
+	      switch (*fmt_str)
+		{
+		  case 'd':
+		    f.specifier = PRINTF_SPEC_d;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
 
-	    case 'z':
-	      f.length = PRINTF_LEN_z;
-	      ++fmt_str;
-	      break;
+		  case 'i':
+		    f.specifier = PRINTF_SPEC_i;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
 
-	    case 't':
-	      f.length = PRINTF_LEN_t;
-	      ++fmt_str;
-	      break;
+		  case 'u':
+		    f.specifier = PRINTF_SPEC_u;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
 
-	    case 'L':
-	      f.length = PRINTF_LEN_L;
-	      ++fmt_str;
-	      break;
+		  case 'o':
+		    f.specifier = PRINTF_SPEC_o;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
 
-	    default:
-	      break;
+		  case 'x':
+		    f.specifier = PRINTF_SPEC_x;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'X':
+		    f.specifier = PRINTF_SPEC_X;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'f':
+		    f.specifier = PRINTF_SPEC_f;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'F':
+		    f.specifier = PRINTF_SPEC_F;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'e':
+		    f.specifier = PRINTF_SPEC_e;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'E':
+		    f.specifier = PRINTF_SPEC_E;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'g':
+		    f.specifier = PRINTF_SPEC_g;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'G':
+		    f.specifier = PRINTF_SPEC_G;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'a':
+		    f.specifier = PRINTF_SPEC_a;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'A':
+		    f.specifier = PRINTF_SPEC_A;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'c':
+		    f.specifier = PRINTF_SPEC_c;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 's':
+		    f.specifier = PRINTF_SPEC_s;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'p':
+		    f.specifier = PRINTF_SPEC_p;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case 'n':
+		    f.specifier = PRINTF_SPEC_n;
+		    f.parameter = gimple_call_arg (stmt, i++);
+		    ++fmt_str;
+		    break;
+
+		  case '%':
+		    f.specifier = PRINTF_SPEC_PERCENT;
+		    ++fmt_str;
+		    break;
+		}
+	      formats.safe_push(f);
 	    }
-
-	  switch (*fmt_str)
-	    {
-	      case 'd':
-		f.specifier = PRINTF_SPEC_d;
-		++fmt_str;
-		break;
-
-	      case 'i':
-		f.specifier = PRINTF_SPEC_i;
-		++fmt_str;
-		break;
-
-	      case 'u':
-		f.specifier = PRINTF_SPEC_u;
-		++fmt_str;
-		break;
-
-	      case 'o':
-		f.specifier = PRINTF_SPEC_o;
-		++fmt_str;
-		break;
-
-	      case 'x':
-		f.specifier = PRINTF_SPEC_x;
-		++fmt_str;
-		break;
-
-	      case 'X':
-		f.specifier = PRINTF_SPEC_X;
-		++fmt_str;
-		break;
-
-	      case 'f':
-		f.specifier = PRINTF_SPEC_f;
-		++fmt_str;
-		break;
-
-	      case 'F':
-		f.specifier = PRINTF_SPEC_F;
-		++fmt_str;
-		break;
-
-	      case 'e':
-		f.specifier = PRINTF_SPEC_e;
-		++fmt_str;
-		break;
-
-	      case 'E':
-		f.specifier = PRINTF_SPEC_E;
-		++fmt_str;
-		break;
-
-	      case 'g':
-		f.specifier = PRINTF_SPEC_g;
-		++fmt_str;
-		break;
-
-	      case 'G':
-		f.specifier = PRINTF_SPEC_G;
-		++fmt_str;
-		break;
-
-	      case 'a':
-		f.specifier = PRINTF_SPEC_a;
-		++fmt_str;
-		break;
-
-	      case 'A':
-		f.specifier = PRINTF_SPEC_A;
-		++fmt_str;
-		break;
-
-	      case 'c':
-		f.specifier = PRINTF_SPEC_c;
-		++fmt_str;
-		break;
-
-	      case 's':
-		f.specifier = PRINTF_SPEC_s;
-		++fmt_str;
-		break;
-
-	      case 'p':
-		f.specifier = PRINTF_SPEC_p;
-		++fmt_str;
-		break;
-
-	      case 'n':
-		f.specifier = PRINTF_SPEC_n;
-		++fmt_str;
-		break;
-
-	      case '%':
-		f.specifier = PRINTF_SPEC_PERCENT;
-		++fmt_str;
-		break;
-	    }
-	  f.print(stdout);
 	}
     }
 
-  putchar('\n');
-}
+  parsed_printf_fmt(gimple *stmt)
+    : parsed_printf_fmt (dyn_cast<gcall *>(stmt))
+    {
+    }
+
+  void print(FILE *stream)
+    {
+      for (struct printf_format_slice &f : formats)
+      {
+	f.print(stream);
+      }
+      fputc('\n', stream);
+    }
+
+  vec<printf_format_slice> formats;
+  bool escaped;
+};
 
 /* Simplify a call to the sprintf builtin with arguments DEST, FMT, and ORIG.
    ORIG may be null if this is a 2-argument call.  We don't attempt to
@@ -4127,7 +4196,9 @@ gimple_fold_builtin_sprintf (gimple_stmt_iterator *gsi)
     return false;
 
   /* If the format doesn't contain % args or %%, use strcpy.  */
-  parse_single_format (fmt_str);
+  print_gimple_stmt (stdout, stmt, 0);
+  parsed_printf_fmt formats(stmt);
+  formats.print(stdout);
 
   /* Verify the required arguments in the original call.  We deal with two
      types of sprintf() calls: 'sprintf (str, fmt)' and
