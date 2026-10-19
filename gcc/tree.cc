@@ -2640,6 +2640,46 @@ build_string (unsigned len, const char *str /*= NULL */)
   return s;
 }
 
+/* Given an INTEGER_CST, return a newly constructed STRING_CST node whose value
+   is the string representation of the argument.  */
+tree
+build_string_from_int (unsigned base, tree num)
+{
+  gcc_assert (TREE_CODE (num) == INTEGER_CST);
+
+  char buf[WIDE_INT_PRINT_BUFFER_SIZE];
+  char *dest = buf;
+
+  wide_int value = wi::to_wide (num);
+
+  switch (base)
+    {
+      case 10:
+	print_dec (value, dest, SIGNED);
+	break;
+
+      case 16:
+	print_hex (value, dest);
+	/* FIXME:  Why print_hex always append 0x to the hex string?  */
+	dest += strlen ("0x");
+	break;
+
+      default:
+	__builtin_unreachable ();
+	break;
+    }
+
+  /* Create string tree node.  */
+  size_t size = strlen (dest) + 1;
+  tree string = build_string (size, dest);
+
+  /* Make sure it is a array type of SIZE elements.  */
+  tree const_char_type = build_qualified_type (char_type_node, TYPE_QUAL_CONST);
+  TREE_TYPE (string) = build_array_type_nelts (const_char_type, size);
+
+  return string;
+}
+
 /* Return a newly constructed COMPLEX_CST node whose value is
    specified by the real and imaginary parts REAL and IMAG.
    Both REAL and IMAG should be constant nodes.  TYPE, if specified,
