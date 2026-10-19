@@ -4367,7 +4367,15 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
   /* Append the assignment to the beginning of the list.  */
   gimple_seq_add_stmt_without_update (&stmts, assign);
 
-  bool optimized = false;
+  /* Figure out we need to emit a '\0' write to the end of the buffer.  */
+  bool requires_0 = false;
+
+  /* Does the call have a lhs?  */
+  bool call_have_lhs = gimple_call_lhs (stmt) != NULL_TREE;
+
+  /* Get the last directive, we can avoid emiting some statements for the last
+     one.  */
+  const directive &last_dir = info.directives.last ();
 
   /* Iterate on every found directive and "compile" into other, cheaper
    * functions if possible.  */
@@ -4378,7 +4386,7 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
       if (dir.width[0] > 0 && dir.width[1] > 0)
 	return false;
 
-      /* If the format doesn't contain % args or %%, use strcpy.  */
+      /* If the format doesn't contain % args or %%, use plain memcpy.  */
       if (dir.is_plain_format ())
 	{
 	  tree directive_fmt = dir.create_fmt ();
@@ -4386,29 +4394,31 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 					   build_pointer_type (TREE_TYPE(directive_fmt)),
 					   directive_fmt);
 
-	  /* Create a tree node with the length of the string.  */
-	  tree dir_fmt_str_len = build_int_cst (size_type_node, dir.len);
+	  /* Create a tree node with the length of the string.  In case it is
+	   * the last directive, also add 1 to account for the '\0' character.  */
+	  tree dir_fmt_str_len = build_int_cst (size_type_node, &dir == &last_dir
+						? dir.len + 1 : dir.len);
 
-	  /* Convert sprintf (str, fmt) into strcpy (str, fmt) when
+	  /* Convert sprintf (str, fmt) into memcpy (str, fmt, len+1) when
 	     'format' is known to contain no % formats.  */
 	  gimple *repl = gimple_build_call (fn_memcpy, 3, last_head, addr_directive_fmt,
 					    dir_fmt_str_len);
 	  gimple_seq_add_stmt_without_update (&stmts, repl);
 
-	  /* Update the head pointer.  */
-	  tree new_head = make_ssa_name (SSA_NAME_VAR(last_head), NULL);
-	  gassign *update_head = gimple_build_assign (new_head, POINTER_PLUS_EXPR, last_head,
-						      dir_fmt_str_len);
-	  gimple_seq_add_stmt_without_update (&stmts, update_head);
+	  /* Update the head pointer if necessary.  */
+	  if (&dir != &last_dir || call_have_lhs)
+	    {
+	      tree new_head = make_ssa_name (SSA_NAME_VAR(last_head), NULL);
+	      gassign *update_head = gimple_build_assign (new_head, POINTER_PLUS_EXPR, last_head,
+							  dir_fmt_str_len);
+	      gimple_seq_add_stmt_without_update (&stmts, update_head);
 
-	  last_head = new_head;
+	      last_head = new_head;
+	    }
 
 	  /* Propagate the NO_WARNING bit to avoid issuing the same
 	     warning more than once.  */
 	  copy_warning (repl, stmt);
-
-	  /* Flag that we were able to do it.  */
-	  optimized = true;
 	}
 
       else if (dir.specifier == 's')
@@ -4421,6 +4431,9 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	     types.  */
 	  if (!POINTER_TYPE_P (TREE_TYPE (dir.arg)))
 	    return false;
+
+	  /* Flag if we can possibly clamp the string.  */
+	  bool maybe_clamped = false;
 
 	  /* Check if we can find the length of the string in compilation time.  */
 	  tree len;
@@ -4438,11 +4451,27 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	      /* When there is no precision indicated, prec is -1.  */
 	      HOST_WIDE_INT max = dir.prec[1] < 0 ? INT_MAX : dir.prec[1];
 
+	      /* In case we are going to clamp the string, we need to emit an
+		 '\0' in case this is the last directive.  */
+	      HOST_WIDE_INT clamped_len = tree_to_shwi (lendata.maxlen);
+	      if (clamped_len > max)
+		{
+		  maybe_clamped = true;
+		  clamped_len = max;
+		}
+	      else
+		{
+		  gcc_assert (maybe_clamped == false);
+
+		  /* In case it is the last directive, add 1 so we copy the '\0'
+		     and we don't need to emit the '\0' outself.  */
+		  if (&dir == &last_dir && requires_0 == false)
+		    ++clamped_len;
+		}
+
 	      /* Now we want the minimum between the string length and whatever
 		 was specified in the precision.  */
-	      tree min = build_int_cst (size_type_node, MIN (tree_to_shwi
-							     (lendata.maxlen),
-							     max));
+	      tree min = build_int_cst (size_type_node, clamped_len);
 
 	      /* Now we fold it to len.  */
 	      len = fold_convert (sizetype, min);
@@ -4468,6 +4497,9 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		  tree precision = build_int_cst (size_type_node, dir.prec[1]);
 		  strlencall = gimple_build_call (fn_strnlen, 2, dir.arg,
 						  precision);
+
+		  /* Flag that the output may be clamped.  */
+		  maybe_clamped = true;
 		}
 	      else
 		{
@@ -4478,6 +4510,22 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	      len = make_temp_ssa_name (size_type_node, NULL, "");
 	      gimple_call_set_lhs (strlencall, len);
 	      gimple_seq_add_stmt_without_update (&stmts, strlencall);
+
+	      /* In case this is the last directive, check if we can add +1 to the
+		 len so it copies the '\0' at the end of the string.  */
+	      if (&dir == &last_dir)
+		{
+		  if (!maybe_clamped)
+		    {
+		      tree len2 = make_temp_ssa_name (size_type_node, NULL, "");
+		      gassign *inc = gimple_build_assign (len2, PLUS_EXPR, len,
+							  size_one_node);
+		      len = len2;
+		      gimple_seq_add_stmt_without_update (&stmts, inc);
+		    }
+		  else
+		    requires_0 = true;
+		}
 	    }
 
 	  /* Convert sprintf (str1, "%s", str2) into memcpy (str1, str2, len).  */
@@ -4485,19 +4533,19 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 					    len);
 	  gimple_seq_add_stmt_without_update (&stmts, repl);
 
-	  /* Update the head pointer.  */
-	  tree new_head = make_ssa_name (SSA_NAME_VAR (last_head), NULL);
-	  gassign *update_head = gimple_build_assign (new_head, POINTER_PLUS_EXPR, last_head,
-						      len);
-	  gimple_seq_add_stmt_without_update (&stmts, update_head);
-	  last_head = new_head;
+	  /* Update the head pointer if necessary.  */
+	  if (&dir != &last_dir || call_have_lhs)
+	    {
+	      tree new_head = make_ssa_name (SSA_NAME_VAR (last_head), NULL);
+	      gassign *update_head = gimple_build_assign (new_head, POINTER_PLUS_EXPR,
+							  last_head, len);
+	      gimple_seq_add_stmt_without_update (&stmts, update_head);
+	      last_head = new_head;
+	    }
 
 	  /* Propagate the NO_WARNING bit to avoid issuing the same
 	     warning more than once.  */
 	  copy_warning (repl, stmt);
-
-	  /* Flag that we were able to do it.  */
-	  optimized = true;
 	}
       else
 	{
@@ -4506,12 +4554,14 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	}
     }
 
-  /* Make sure the string ends with '\0'.  */
-  tree deference = build_simple_mem_ref (last_head);
-  gassign *ensure_0 = gimple_build_assign (deference, build_zero_cst
-					   (char_type_node));
-  gimple_seq_add_stmt_without_update (&stmts, ensure_0);
-
+  if (requires_0)
+    {
+      /* Make sure the string ends with '\0'.  */
+      tree deference = build_simple_mem_ref (last_head);
+      gassign *ensure_0 = gimple_build_assign (deference, build_zero_cst
+					       (char_type_node));
+      gimple_seq_add_stmt_without_update (&stmts, ensure_0);
+    }
 
   /* Compute the return value again.  */
   if (tree lhs = gimple_call_lhs (stmt))
@@ -4533,10 +4583,6 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 
       gimple_seq_add_stmt_without_update (&stmts, assign2);
     }
-
-  /* If we are here, that means we haven't given up trying to optimze the call
-     while doing so.  */
-  gcc_assert (optimized);
 
   /* Fold the created list of stmts replacing the original call.  */
   gsi_replace_with_seq_vops (gsi, stmts);
