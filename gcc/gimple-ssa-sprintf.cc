@@ -4586,6 +4586,11 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	  /* Propagate the NO_WARNING bit to avoid issuing the same
 	     warning more than once.  */
 	  copy_warning (repl, stmt);
+
+	  /* In case the user provided us broken strings, make sure that
+	     -Warray-bounds won't issue a new warning.  */
+	  suppress_warning (repl, OPT_Warray_bounds_);
+
 	  break;
 	}
 
