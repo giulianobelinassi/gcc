@@ -2643,7 +2643,7 @@ build_string (unsigned len, const char *str /*= NULL */)
 /* Given an INTEGER_CST, return a newly constructed STRING_CST node whose value
    is the string representation of the argument.  */
 tree
-build_string_from_int (unsigned base, tree num)
+build_string_from_int (int base, tree num)
 {
   gcc_assert (TREE_CODE (num) == INTEGER_CST);
 
