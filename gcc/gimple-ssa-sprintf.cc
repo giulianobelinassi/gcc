@@ -4390,6 +4390,9 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
      one.  */
   const directive &last_dir = info.directives.last ();
 
+  /* In case of integers, flags if its signed.  */
+  bool sign = false;
+
   /* Iterate on every found directive and "compile" into other, cheaper
    * functions if possible.  */
   for (const directive &dir : info.directives)
@@ -4432,10 +4435,15 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	  /* Propagate the NO_WARNING bit to avoid issuing the same
 	     warning more than once.  */
 	  copy_warning (repl, stmt);
+
+	  /* This is handled differently.  */
+	  continue;
 	}
 
-      else if (dir.specifier == 's')
+      /* Now handle the specifiers.  */
+      switch (dir.specifier)
 	{
+	case 's': {
 	  /* Don't crash on sprintf (str1, "%s").  */
 	  if (!dir.arg)
 	    return false;
@@ -4559,9 +4567,15 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	  /* Propagate the NO_WARNING bit to avoid issuing the same
 	     warning more than once.  */
 	  copy_warning (repl, stmt);
+	  break;
 	}
-      else if (dir.specifier == 'd' || dir.specifier == 'i')
-	{
+
+	case 'd':
+	case 'i':
+	  sign = true;
+	  /* Fallthrough.  */
+
+	case 'u': {
 	  /* Don't crash on sprintf (str1, "%s").  */
 	  if (!dir.arg)
 	    return false;
@@ -4576,7 +4590,7 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	    return false;
 
 	  /* Check if the number is representable by %d.  If not, give up.  */
-	  tree dirtype = get_type_tree_for_integer (true, dir);
+	  tree dirtype = get_type_tree_for_integer (sign, dir);
 	  if (dirtype == NULL_TREE)
 	    return false;
 
@@ -4602,9 +4616,10 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	      gimple_seq_add_stmt_without_update (&stmts, update_head);
 	      last_head = new_head;
 	    }
+	  break;
 	}
-      else
-	{
+
+	default:
 	  /* Unsupported directive.  Abort.  */
 	  return false;
 	}
