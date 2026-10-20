@@ -4662,11 +4662,11 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
   /* Compute the return value again.  */
   if (tree lhs = gimple_call_lhs (stmt))
     {
-      tree len = make_temp_ssa_name (size_type_node, NULL, "len");
+      tree len = make_temp_ssa_name (ptrdiff_type_node, NULL, "len");
 
       /* The number of written bytes is the difference of whatever is in the
 	 head pointer and the original buffer, buf - head.  */
-      gassign *assign1 = gimple_build_assign (len, MINUS_EXPR, last_head, dest);
+      gassign *assign1 = gimple_build_assign (len, POINTER_DIFF_EXPR, last_head, dest);
 
       gimple_seq_add_stmt_without_update (&stmts, assign1);
 
