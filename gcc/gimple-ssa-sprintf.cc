@@ -4376,6 +4376,10 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
   if (!fn_strlen || !fn_memcpy)
     return false;
 
+  /* Do not crash on sprintf (buf, "");  */
+  if (info.directives.is_empty ())
+    return false;
+
   /* Create a list of statements we will append into.  */
   gimple_seq stmts = NULL;
 
@@ -4396,12 +4400,12 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
   /* Does the call have a lhs?  */
   bool call_have_lhs = gimple_call_lhs (stmt) != NULL_TREE;
 
+  /* In case of integers, flags if its signed.  */
+  bool sign = false;
+
   /* Get the last directive, we can avoid emiting some statements for the last
      one.  */
   const directive &last_dir = info.directives.last ();
-
-  /* In case of integers, flags if its signed.  */
-  bool sign = false;
 
   /* Iterate on every found directive and "compile" into other, cheaper
    * functions if possible.  */
