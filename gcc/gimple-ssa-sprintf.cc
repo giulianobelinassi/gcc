@@ -4619,11 +4619,12 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 
 	  /* Build the string.  */
 	  tree str = build_string_from_int (10, dir.arg);
+	  tree addr_str = build1 (ADDR_EXPR, build_pointer_type (TREE_TYPE (str)), str);
 
 	  /* Emit the memcpy.  */
 	  tree len = build_int_cst (sizetype, &dir == &last_dir ?
 				    TREE_STRING_LENGTH (str) : TREE_STRING_LENGTH (str) - 1);
-	  gimple *repl = gimple_build_call (fn_memcpy, 3, last_head, str, len);
+	  gimple *repl = gimple_build_call (fn_memcpy, 3, last_head, addr_str, len);
 	  gimple_seq_add_stmt_without_update (&stmts, repl);
 
 	  /* Update the head pointer if necessary.  */
