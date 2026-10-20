@@ -631,6 +631,16 @@ struct directive
       &= ~(1U << (c % (CHAR_BIT * sizeof *flags)));
   }
 
+  /* Check if there is any set flag.  That means, if the bitfield is != 0.  */
+  bool have_any_set_flag () const
+  {
+    unsigned reduce = 0;
+    for (size_t i = 0; i < ARRAY_SIZE (flags); i++)
+      reduce |= flags[i];
+
+    return reduce;
+  }
+
   /* Set both bounds of the width range to VAL.  */
   void set_width (HOST_WIDE_INT val)
   {
@@ -4400,6 +4410,11 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
       /* In case this string has a 'width' value, do not optimize because we
 	 still not support it.  */
       if (dir.width[0] > 0 && dir.width[1] > 0)
+	return false;
+
+      /* In case there is an special flag to it, do not optimize it because
+	 we don't support it.  */
+      if (dir.have_any_set_flag () == true)
 	return false;
 
       /* If the format doesn't contain % args or %%, use plain memcpy.  */
