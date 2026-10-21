@@ -2651,11 +2651,12 @@ build_string_from_int (int base, tree num)
   char *dest = buf;
 
   wide_int value = wi::to_wide (num);
+  signop sign = TYPE_UNSIGNED (TREE_TYPE (num)) ? UNSIGNED : SIGNED;
 
   switch (base)
     {
       case 10:
-	print_dec (value, dest, SIGNED);
+	print_dec (value, dest, sign);
 	break;
 
       case 16:
