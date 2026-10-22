@@ -697,6 +697,7 @@ struct directive
 
       TREE_TYPE (string) = build_array_type_nelts (const_char_type, len + 1);
 
+      free (dup);
       return string;
     }
 };
