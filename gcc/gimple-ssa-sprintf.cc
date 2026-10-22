@@ -4501,6 +4501,11 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 			tree precision = build_int_cst (size_type_node, dir.prec[1]);
 			strlencall = gimple_build_call (fn_strnlen, 2, dir.arg,
 							precision);
+			/* At a later pass we might find out that the string
+			   length is actually computable in compilation time,
+			   and this can issue an warning on strnlen.  Hence
+			   disable the warning.  */
+			suppress_warning (strlencall, OPT_Warray_bounds_);
 		      }
 		    else
 		      {
