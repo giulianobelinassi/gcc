@@ -1243,6 +1243,67 @@ adjust_range_for_overflow (tree dirtype, tree *argmin, tree *argmax)
   return true;
 }
 
+/* Get the type of modifier for an integer specifier.  */
+static tree
+get_type_tree_for_integer (bool sign, const directive &dir)
+{
+  tree intmax_type_node;
+  tree uintmax_type_node;
+
+  tree dirtype;
+
+  /* Determine the expected type of the argument from the length
+     modifier.  */
+  switch (dir.modifier)
+    {
+    case FMT_LEN_none:
+      if (dir.specifier == 'p')
+	dirtype = ptr_type_node;
+      else
+	dirtype = sign ? integer_type_node : unsigned_type_node;
+      break;
+
+    case FMT_LEN_h:
+      dirtype = sign ? short_integer_type_node : short_unsigned_type_node;
+      break;
+
+    case FMT_LEN_hh:
+      dirtype = sign ? signed_char_type_node : unsigned_char_type_node;
+      break;
+
+    case FMT_LEN_l:
+      dirtype = sign ? long_integer_type_node : long_unsigned_type_node;
+      break;
+
+    /* FIXME: L is used for doubles, not integers.  Handling this as long long
+       is potentially problematic and may depend of printf implementation.  */
+    case FMT_LEN_L:
+    case FMT_LEN_ll:
+      dirtype = (sign
+		 ? long_long_integer_type_node
+		 : long_long_unsigned_type_node);
+      break;
+
+    case FMT_LEN_z:
+      dirtype = signed_or_unsigned_type_for (!sign, size_type_node);
+      break;
+
+    case FMT_LEN_t:
+      dirtype = signed_or_unsigned_type_for (!sign, ptrdiff_type_node);
+      break;
+
+    case FMT_LEN_j:
+      build_intmax_type_nodes (&intmax_type_node, &uintmax_type_node);
+      dirtype = sign ? intmax_type_node : uintmax_type_node;
+      break;
+
+    default:
+      return NULL_TREE;
+    }
+
+  return dirtype;
+}
+
 /* Return a range representing the minimum and maximum number of bytes
    that the format directive DIR will output for any argument given
    the WIDTH and PRECISION (extracted from DIR).  This function is
@@ -1251,9 +1312,6 @@ adjust_range_for_overflow (tree dirtype, tree *argmin, tree *argmax)
 static fmtresult
 format_integer (const directive &dir, tree arg, pointer_query &ptr_qry)
 {
-  tree intmax_type_node;
-  tree uintmax_type_node;
-
   /* Base to format the number in.  */
   int base;
 
@@ -1297,54 +1355,9 @@ format_integer (const directive &dir, tree arg, pointer_query &ptr_qry)
   const unsigned adj = (sign | maybebase) + (base == 2 || base == 16);
 
   /* The type of the "formal" argument expected by the directive.  */
-  tree dirtype = NULL_TREE;
-
-  /* Determine the expected type of the argument from the length
-     modifier.  */
-  switch (dir.modifier)
-    {
-    case FMT_LEN_none:
-      if (dir.specifier == 'p')
-	dirtype = ptr_type_node;
-      else
-	dirtype = sign ? integer_type_node : unsigned_type_node;
-      break;
-
-    case FMT_LEN_h:
-      dirtype = sign ? short_integer_type_node : short_unsigned_type_node;
-      break;
-
-    case FMT_LEN_hh:
-      dirtype = sign ? signed_char_type_node : unsigned_char_type_node;
-      break;
-
-    case FMT_LEN_l:
-      dirtype = sign ? long_integer_type_node : long_unsigned_type_node;
-      break;
-
-    case FMT_LEN_L:
-    case FMT_LEN_ll:
-      dirtype = (sign
-		 ? long_long_integer_type_node
-		 : long_long_unsigned_type_node);
-      break;
-
-    case FMT_LEN_z:
-      dirtype = signed_or_unsigned_type_for (!sign, size_type_node);
-      break;
-
-    case FMT_LEN_t:
-      dirtype = signed_or_unsigned_type_for (!sign, ptrdiff_type_node);
-      break;
-
-    case FMT_LEN_j:
-      build_intmax_type_nodes (&intmax_type_node, &uintmax_type_node);
-      dirtype = sign ? intmax_type_node : uintmax_type_node;
-      break;
-
-    default:
-      return fmtresult ();
-    }
+  tree dirtype = get_type_tree_for_integer (sign, dir);
+  if (dirtype == NULL_TREE)
+    return fmtresult ();
 
   /* The type of the argument to the directive, either deduced from
      the actual non-constant argument if one is known, or from
@@ -4398,6 +4411,9 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
       if (dir.have_any_set_flag () == true)
 	return false;
 
+      /* In case of integers, flags if its signed.  */
+      bool sign = false;
+
       /* Computed length of the string.  */
       tree len = NULL_TREE;
 
@@ -4526,6 +4542,55 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		/* In case the user provided us broken strings, make sure that
 		   -Warray-bounds won't issue a new warning.  */
 		suppress_warning (repl, OPT_Warray_bounds_);
+
+		break;
+	      }
+
+	    case 'd':
+	    case 'i':
+	      sign = true;
+	      /* Fallthrough.  */
+
+	    case 'u':
+	      {
+		/* Don't crash on sprintf (str1, "%u").  */
+		if (!dir.arg)
+		  return false;
+
+		/* If user specified a precision then let's not optimize it.  */
+		if (dir.prec[1] >= 0)
+		  return false;
+
+		/* If the parameter to %d is not known in compile time, then do
+		   not optimize it.  */
+		if (TREE_CODE (dir.arg) != INTEGER_CST)
+		  return false;
+
+		/* Check if the number is representable by %d.  If not, give
+		   up.  */
+		tree dirtype = get_type_tree_for_integer (sign, dir);
+		if (dirtype == NULL_TREE)
+		  return false;
+
+		/* In case the value doesn't fit, give up.  */
+		if (!int_fits_type_p (dir.arg, dirtype))
+		  return false;
+
+		/* Build the string.  */
+		tree str = build_string_from_int (10, dir.arg);
+		tree addr_str = build1 (ADDR_EXPR,
+					build_pointer_type (TREE_TYPE (str)),
+					str);
+
+		/* Now TREE_STRING_LENGTH returns the SIZE of the string.  So
+		   subtract one so we have its LENGTH.  */
+		size_t str_len = TREE_STRING_LENGTH (str) - 1;
+
+		/* Emit the memcpy.  */
+		len = build_int_cst (sizetype, str_len);
+		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
+						  addr_str, len);
+		gimple_seq_add_stmt_without_update (&stmts, repl);
 
 		break;
 	      }

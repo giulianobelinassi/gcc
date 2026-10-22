@@ -183,6 +183,90 @@ test_s_unknown (void)
   T ("hel", "%.3s", vhello);
 }
 
+static void __attribute__ ((noipa))
+test_int (void)
+{
+  TV ("0", "%d", 0);
+  TV ("1", "%d", 1);
+  TV ("-1", "%d", -1);
+  TV ("-42", "%d", -42);
+  TV ("123456", "%i", 123456);
+  TV ("0", "%u", 0u);
+  TV ("7", "%u", 7u);
+
+  /* Precision of zero with a zero argument produces no output.  */
+  TV ("", "%.0d", 0);
+  TV ("", "%.0i", 0);
+  TV ("", "%.0u", 0u);
+  TV ("[]", "[%.0d]", 0);
+  TV ("5", "%.0d", 5);
+  TV ("-5", "%.0d", -5);
+
+  TV ("-128", "%hhd", -128);
+  TV ("127", "%hhd", 127);
+  TV ("255", "%hhu", 255);
+  TV ("-32768", "%hd", -32768);
+  TV ("65535", "%hu", 65535);
+
+  TV ("123", "%zu", (size_t) 123);
+  TV ("-123", "%td", (__PTRDIFF_TYPE__) -123);
+  TV ("-123", "%jd", (__INTMAX_TYPE__) -123);
+  TV ("123", "%ju", (__UINTMAX_TYPE__) 123);
+  TV ("-123", "%ld", -123L);
+  TV ("123", "%lu", 123LU);
+  TV ("-123", "%lld", -123LL);
+  TV ("123", "%llu", 123LLU);
+
+#if __INT_MAX__ == 2147483647
+  TV ("2147483647", "%d", __INT_MAX__);
+  TV ("-2147483648", "%d", -__INT_MAX__ - 1);
+  TV ("2147483647", "%u", (unsigned) __INT_MAX__);
+  TV ("2147483648", "%u", (unsigned) __INT_MAX__ + 1);
+  TV ("4294967295", "%u", -1u);
+  TV ("3000000000", "%u", 3000000000u);
+#endif
+
+#if __LONG_MAX__ == 9223372036854775807L
+  TV ("9223372036854775807", "%ld", __LONG_MAX__);
+  TV ("-9223372036854775808", "%ld", -__LONG_MAX__ - 1);
+  TV ("18446744073709551615", "%lu", -1LU);
+#elif __LONG_MAX__ == 2147483647L
+  TV ("2147483647", "%ld", __LONG_MAX__);
+  TV ("-2147483648", "%ld", -__LONG_MAX__ - 1);
+  TV ("4294967295", "%lu", -1LU);
+#endif
+
+#if __LONG_LONG_MAX__ == 9223372036854775807LL
+  TV ("9223372036854775807", "%lld", __LONG_LONG_MAX__);
+  TV ("-9223372036854775808", "%lld", -__LONG_LONG_MAX__ - 1);
+  TV ("18446744073709551615", "%llu", -1LLU);
+#endif
+}
+
+static void __attribute__ ((noipa))
+test_mixed (int c)
+{
+  const char *s2 = c ? "ab" : "abcd";
+
+  TV ("x=-7, s=abc, u=7.", "x=%d, s=%s, u=%u.", -7, "abc", 7u);
+  TV ("-7abc", "%d%s", -7, "abc");
+  TV ("abc-7", "%s%d", "abc", -7);
+  TV ("1 2 3", "%d %i %u", 1, 2, 3u);
+  TV ("123", "%d%d%d", 1, 2, 3);
+  TV ("he42", "%.2s%d", "hello", 42);
+  TV ("42he", "%d%.2s", 42, "hello");
+  TV ("[42:he]", "[%d:%.2s]", 42, "hello");
+
+  TV (c ? "ab-42" : "abcd-42", "%s%d", s2, -42);
+  TV (c ? "-42ab" : "-42abcd", "%d%s", -42, s2);
+  TV (c ? "<ab|1>" : "<abcd|1>", "<%s|%d>", s2, 1);
+
+  V ("hello-42", "%s%d", vhello, -42);
+  V ("-42hello", "%d%s", -42, vhello);
+  V ("-42hel", "%d%.3s", -42, vhello);
+  V ("hel-42", "%.3s%d", vhello, -42);
+}
+
 /* Directives the folding does not handle must still work.  */
 
 static void __attribute__ ((noipa))
@@ -261,6 +345,9 @@ main (void)
   test_s_range (vzero);
   test_s_range (vone);
   test_s_unknown ();
+  test_int ();
+  test_mixed (vzero);
+  test_mixed (vone);
   test_unhandled (3, 5);
   test_unknown_width (5);
 
