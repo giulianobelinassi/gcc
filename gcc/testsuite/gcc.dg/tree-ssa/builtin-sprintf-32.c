@@ -49,6 +49,26 @@ int f_s_range_ret (char *d, int c)
   return sprintf (d, "%s", c ? "ab" : "abcd");
 }
 
+void f_d (char *d)
+{
+  sprintf (d, "%d", -123);
+}
+
+void f_u (char *d)
+{
+  sprintf (d, "%u", 123u);
+}
+
+int f_d_ret (char *d)
+{
+  return sprintf (d, "%i", 123);
+}
+
+void f_mixed (char *d, const char *s)
+{
+  sprintf (d, "%d:%s:%u", -1, s, 2u);
+}
+
 /* { dg-final { scan-tree-dump-times "__builtin_strnlen" 1 "optimized" } } */
 
 /* Calls expected not to be folded because we don't support these formats so
