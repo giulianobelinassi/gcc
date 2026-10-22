@@ -4294,6 +4294,136 @@ try_substitute_return_value (gimple_stmt_iterator *gsi,
   return removed;
 }
 
+/* Simplify a call to the sprintf builtin with arguments DEST, FMT, and ORIG.
+   ORIG may be null if this is a 2-argument call.  We don't attempt to
+   simplify calls with more than 3 arguments.
+
+   Return true if simplification was possible, otherwise false.  */
+
+static bool
+gimple_fold_builtin_sprintf (gimple_stmt_iterator *gsi)
+{
+  gimple *stmt = gsi_stmt (*gsi);
+
+  /* Verify the required arguments in the original call.  We deal with two
+     types of sprintf() calls: 'sprintf (str, fmt)' and
+     'sprintf (dest, "%s", orig)'.  */
+  if (gimple_call_num_args (stmt) > 3)
+    return false;
+
+  tree orig = NULL_TREE;
+  if (gimple_call_num_args (stmt) == 3)
+    orig = gimple_call_arg (stmt, 2);
+
+  /* Check whether the format is a literal string constant.  */
+  tree fmt = gimple_call_arg (stmt, 1);
+  const char *fmt_str = c_getstr (fmt);
+  if (fmt_str == NULL)
+    return false;
+
+  tree dest = gimple_call_arg (stmt, 0);
+
+  if (!init_target_chars ())
+    return false;
+
+  tree fn = builtin_decl_implicit (BUILT_IN_STRCPY);
+  if (!fn || (!gimple_vdef (stmt) && gimple_in_ssa_p (cfun)))
+    return false;
+
+  /* If the format doesn't contain % args or %%, use strcpy.  */
+  if (strchr (fmt_str, target_percent) == NULL)
+    {
+      /* Don't optimize sprintf (buf, "abc", ptr++).  */
+      if (orig)
+	return false;
+
+      /* Convert sprintf (str, fmt) into strcpy (str, fmt) when
+	 'format' is known to contain no % formats.  */
+      gimple_seq stmts = NULL;
+      gimple *repl = gimple_build_call (fn, 2, dest, fmt);
+
+      /* Propagate the NO_WARNING bit to avoid issuing the same
+	 warning more than once.  */
+      copy_warning (repl, stmt);
+
+      gimple_seq_add_stmt_without_update (&stmts, repl);
+      if (tree lhs = gimple_call_lhs (stmt))
+	{
+	  repl = gimple_build_assign (lhs, build_int_cst (TREE_TYPE (lhs),
+							  strlen (fmt_str)));
+	  gimple_seq_add_stmt_without_update (&stmts, repl);
+	  gsi_replace_with_seq_vops (gsi, stmts);
+	  /* gsi now points at the assignment to the lhs, get a
+	     stmt iterator to the memcpy call.
+	     ???  We can't use gsi_for_stmt as that doesn't work when the
+	     CFG isn't built yet.  */
+	  gimple_stmt_iterator gsi2 = *gsi;
+	  gsi_prev (&gsi2);
+	  fold_stmt (&gsi2);
+	}
+      else
+	{
+	  gsi_replace_with_seq_vops (gsi, stmts);
+	  fold_stmt (gsi);
+	}
+      return true;
+    }
+
+  /* If the format is "%s", use strcpy if the result isn't used.  */
+  else if (fmt_str && strcmp (fmt_str, target_percent_s) == 0)
+    {
+      /* Don't crash on sprintf (str1, "%s").  */
+      if (!orig)
+	return false;
+
+      /* Don't fold calls with source arguments of invalid (nonpointer)
+	 types.  */
+      if (!POINTER_TYPE_P (TREE_TYPE (orig)))
+	return false;
+
+      tree orig_len = NULL_TREE;
+      if (gimple_call_lhs (stmt))
+	{
+	  orig_len = get_maxval_strlen (orig, SRK_STRLEN);
+	  if (!orig_len)
+	    return false;
+	}
+
+      /* Convert sprintf (str1, "%s", str2) into strcpy (str1, str2).  */
+      gimple_seq stmts = NULL;
+      gimple *repl = gimple_build_call (fn, 2, dest, orig);
+
+      /* Propagate the NO_WARNING bit to avoid issuing the same
+	 warning more than once.  */
+      copy_warning (repl, stmt);
+
+      gimple_seq_add_stmt_without_update (&stmts, repl);
+      if (tree lhs = gimple_call_lhs (stmt))
+	{
+	  if (!useless_type_conversion_p (TREE_TYPE (lhs),
+					  TREE_TYPE (orig_len)))
+	    orig_len = fold_convert (TREE_TYPE (lhs), orig_len);
+	  repl = gimple_build_assign (lhs, orig_len);
+	  gimple_seq_add_stmt_without_update (&stmts, repl);
+	  gsi_replace_with_seq_vops (gsi, stmts);
+	  /* gsi now points at the assignment to the lhs, get a
+	     stmt iterator to the memcpy call.
+	     ???  We can't use gsi_for_stmt as that doesn't work when the
+	     CFG isn't built yet.  */
+	  gimple_stmt_iterator gsi2 = *gsi;
+	  gsi_prev (&gsi2);
+	  fold_stmt (&gsi2);
+	}
+      else
+	{
+	  gsi_replace_with_seq_vops (gsi, stmts);
+	  fold_stmt (gsi);
+	}
+      return true;
+    }
+  return false;
+}
+
 /* Try to simplify a s{,n}printf call described by INFO with result
    RES by replacing it with a simpler and presumably more efficient
    call (such as strcpy).  */
