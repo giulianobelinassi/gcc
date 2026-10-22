@@ -3655,10 +3655,6 @@ gimple_fold_builtin_sprintf (gimple_stmt_iterator *gsi)
     return false;
 
   /* If the format doesn't contain % args or %%, use strcpy.  */
-  //print_gimple_stmt (stdout, stmt, 0);
-  //parsed_printf_fmt formats(stmt);
-  //formats.print(stdout);
-
   if (strchr (fmt_str, target_percent) == NULL)
     {
       /* Don't optimize sprintf (buf, "abc", ptr++).  */

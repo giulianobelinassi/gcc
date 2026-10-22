@@ -2655,19 +2655,18 @@ build_string_from_int (int base, tree num)
 
   switch (base)
     {
-      case 10:
-	print_dec (value, dest, sign);
-	break;
+    case 10:
+      print_dec (value, dest, sign);
+      break;
 
-      case 16:
-	print_hex (value, dest);
-	/* FIXME:  Why print_hex always append 0x to the hex string?  */
-	dest += strlen ("0x");
-	break;
+    case 16:
+      print_hex (value, dest);
+      /* FIXME:  Why print_hex always append 0x to the hex string?  */
+      dest += strlen ("0x");
+      break;
 
-      default:
-	__builtin_unreachable ();
-	break;
+    default:
+      gcc_unreachable ();
     }
 
   /* Create string tree node.  */

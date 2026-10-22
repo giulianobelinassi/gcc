@@ -677,29 +677,30 @@ struct directive
 		|| (unsigned HOST_WIDE_INT)prec[1] < target_int_max ()));
   }
 
-  /* Check if the format string is the plain format one, that is without any %.  */
+  /* Check if the format string is the plain format one, that is without
+     any %.  */
   inline bool is_plain_format () const
-    {
-      return fmtfunc == format_plain;
-    }
+  {
+    return fmtfunc == format_plain;
+  }
 
   inline tree create_fmt () const
-    {
-      /* Duplicate string to make sure it is \0-terminated.  */
-      char *dup = xstrndup (beg, len);
+  {
+    /* Duplicate string to make sure it is \0-terminated.  */
+    char *dup = xstrndup (beg, len);
 
-      /* Create the string tree object.  */
-      tree string = build_string (len + 1, dup);
+    /* Create the string tree object.  */
+    tree string = build_string (len + 1, dup);
 
-      /* With type as an array of const char equal to the len of the string.  */
-      tree const_char_type = build_qualified_type (char_type_node,
-						   TYPE_QUAL_CONST);
+    /* With type as an array of const char equal to the len of the string.  */
+    tree const_char_type = build_qualified_type (char_type_node,
+						 TYPE_QUAL_CONST);
 
-      TREE_TYPE (string) = build_array_type_nelts (const_char_type, len + 1);
+    TREE_TYPE (string) = build_array_type_nelts (const_char_type, len + 1);
 
-      free (dup);
-      return string;
-    }
+    free (dup);
+    return string;
+  }
 };
 
 /* The result of a call to a formatted function.  */
@@ -4131,7 +4132,7 @@ compute_format_length (call_info &info, format_result *res,
 	return false;
 
       /* Remember the directive.  */
-      info.directives.safe_push(dir);
+      info.directives.safe_push (dir);
 
       /* Return success when the directive is zero bytes long and it's
 	 the last thing in the format string (i.e., it's the terminating
@@ -4397,7 +4398,7 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
   const directive &last_dir = info.directives.last ();
 
   /* Iterate on every found directive and "compile" into other, cheaper
-   * functions if possible.  */
+     functions if possible.  */
   for (const directive &dir : info.directives)
     {
       /* In case this string has a 'width' value, do not optimize because we
@@ -4420,14 +4421,16 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
       if (dir.is_plain_format ())
 	{
 	  tree directive_fmt = dir.create_fmt ();
-	  tree addr_directive_fmt = build1(ADDR_EXPR,
-					   build_pointer_type (TREE_TYPE(directive_fmt)),
-					   directive_fmt);
+	  tree directive_fmt_ptr_type
+	    = build_pointer_type (TREE_TYPE (directive_fmt));
+	  tree addr_directive_fmt = build1 (ADDR_EXPR, directive_fmt_ptr_type,
+					    directive_fmt);
 
 	  size_t dir_len = dir.len;
 
 	  /* Create a tree node with the length of the string.  In case it is
-	   * the last directive, also add 1 to account for the '\0' character.  */
+	     the last directive, also add 1 to account for the '\0'
+	     character.  */
 	  len = build_int_cst (size_type_node, dir_len);
 
 	  /* Convert sprintf (str, fmt) into memcpy (str, fmt, len+1) when
@@ -4445,40 +4448,43 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	  /* Now handle the specifiers.  */
 	  switch (dir.specifier)
 	    {
-	      case 's': {
+	    case 's':
+	      {
 		/* Don't crash on sprintf (str1, "%s").  */
 		if (!dir.arg)
 		  return false;
 
-		/* Don't fold calls with source arguments of invalid (nonpointer)
-		   types.  */
+		/* Don't fold calls with source arguments of invalid
+		   (nonpointer) types.  */
 		if (!POINTER_TYPE_P (TREE_TYPE (dir.arg)))
 		  return false;
 
-		/* In case we have a precision, we need to take that into account.  */
+		/* In case we have a precision, we need to take that into
+		   account.  */
 		if (dir.prec[1] == INT_MAX)
 		  return false; /* Unknown precision, better be safe.  */
 
-		/* Check if we can find the length of the string in compilation time.  */
+		/* Check if we can find the length of the string in compilation
+		   time.  */
 		c_strlen_data lendata = { };
-		if (get_range_strlen (dir.arg, &lendata, /*eltsize=*/1) &&
-		    TREE_CODE (lendata.maxlen) == INTEGER_CST &&
-		    TREE_CODE (lendata.minlen) == INTEGER_CST &&
-		    tree_int_cst_equal (lendata.maxlen, lendata.minlen))
+		if (get_range_strlen (dir.arg, &lendata, /*eltsize=*/1)
+		    && TREE_CODE (lendata.maxlen) == INTEGER_CST
+		    && TREE_CODE (lendata.minlen) == INTEGER_CST
+		    && tree_int_cst_equal (lendata.maxlen, lendata.minlen))
 		  {
 		    /* We can.  */
 
 		    /* When there is no precision indicated, prec is -1.  */
 		    HOST_WIDE_INT max = dir.prec[1] < 0 ? INT_MAX : dir.prec[1];
 
-		    /* In case we are going to clamp the string, we need to emit an
-		       '\0' in case this is the last directive.  */
+		    /* In case we are going to clamp the string, we need to
+		       emit an '\0' in case this is the last directive.  */
 		    HOST_WIDE_INT clamped_len = tree_to_shwi (lendata.maxlen);
 		    if (clamped_len > max)
 		      clamped_len = max;
 
-		    /* Now we want the minimum between the string length and whatever
-		       was specified in the precision.  */
+		    /* Now we want the minimum between the string length and
+		       whatever was specified in the precision.  */
 		    tree min = build_int_cst (size_type_node, clamped_len);
 
 		    /* Now we fold it to len.  */
@@ -4486,8 +4492,8 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		  }
 		else
 		  {
-		    /* We can not.  Create a call to strlen to find the length of
-		       str2.  */
+		    /* We can not.  Create a call to strlen to find the length
+		       of str2.  */
 
 		    gimple *strlencall;
 		    if (dir.prec[1] >= 0)
@@ -4496,9 +4502,10 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 			if (!fn_strnlen)
 			  return false;
 
-			/* We have precision.  Set a call to strnlen to account for
-			   that.  */
-			tree precision = build_int_cst (size_type_node, dir.prec[1]);
+			/* We have precision.  Set a call to strnlen to account
+			   for that.  */
+			tree precision = build_int_cst (size_type_node,
+							dir.prec[1]);
 			strlencall = gimple_build_call (fn_strnlen, 2, dir.arg,
 							precision);
 			/* At a later pass we might find out that the string
@@ -4518,9 +4525,10 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		    gimple_seq_add_stmt_without_update (&stmts, strlencall);
 		  }
 
-		/* Convert sprintf (str1, "%s", str2) into memcpy (str1, str2, len).  */
-		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head, dir.arg,
-						  len);
+		/* Convert sprintf (str1, "%s", str2) into
+		   memcpy (str1, str2, len).  */
+		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
+						  dir.arg, len);
 		gimple_seq_add_stmt_without_update (&stmts, repl);
 
 		/* Propagate the NO_WARNING bit to avoid issuing the same
@@ -4534,12 +4542,13 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		break;
 	      }
 
-	      case 'd':
-	      case 'i':
-		sign = true;
-		/* Fallthrough.  */
+	    case 'd':
+	    case 'i':
+	      sign = true;
+	      /* Fallthrough.  */
 
-	      case 'u': {
+	    case 'u':
+	      {
 		/* Don't crash on sprintf (str1, "%s").  */
 		if (!dir.arg)
 		  return false;
@@ -4548,12 +4557,13 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		if (dir.prec[1] >= 0)
 		  return false;
 
-		/* If the parameter to %d is not known in compile time, then do not
-		   optimize it.  */
+		/* If the parameter to %d is not known in compile time, then do
+		   not optimize it.  */
 		if (TREE_CODE (dir.arg) != INTEGER_CST)
 		  return false;
 
-		/* Check if the number is representable by %d.  If not, give up.  */
+		/* Check if the number is representable by %d.  If not, give
+		   up.  */
 		tree dirtype = get_type_tree_for_integer (sign, dir);
 		if (dirtype == NULL_TREE)
 		  return false;
@@ -4564,24 +4574,27 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 
 		/* Build the string.  */
 		tree str = build_string_from_int (10, dir.arg);
-		tree addr_str = build1 (ADDR_EXPR, build_pointer_type (TREE_TYPE (str)), str);
+		tree addr_str = build1 (ADDR_EXPR,
+					build_pointer_type (TREE_TYPE (str)),
+					str);
 
-		/* Now TREE_STRING_LENGTH returns the SIZE of the string. so subtract one
-		   so we have its LENGTH.  */
+		/* Now TREE_STRING_LENGTH returns the SIZE of the string.  So
+		   subtract one so we have its LENGTH.  */
 		size_t str_len = TREE_STRING_LENGTH (str) - 1;
 
 		/* Emit the memcpy.  */
 		len = build_int_cst (sizetype, str_len);
-		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head, addr_str, len);
+		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
+						  addr_str, len);
 		gimple_seq_add_stmt_without_update (&stmts, repl);
 
 		break;
 	      }
 
-	      default:
-		/* Unsupported directive.  Abort.  */
-		return false;
-	      }
+	    default:
+	      /* Unsupported directive.  Abort.  */
+	      return false;
+	    }
 	}
 
       /* Update the head pointer if necessary.  */
@@ -4589,7 +4602,8 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	{
 	  gcc_assert (len != NULL_TREE);
 	  tree new_head = make_ssa_name (SSA_NAME_VAR (last_head), NULL);
-	  gassign *update_head = gimple_build_assign (new_head, POINTER_PLUS_EXPR,
+	  gassign *update_head = gimple_build_assign (new_head,
+						      POINTER_PLUS_EXPR,
 						      last_head, len);
 	  gimple_seq_add_stmt_without_update (&stmts, update_head);
 	  last_head = new_head;
@@ -4603,7 +4617,8 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 
       /* The number of written bytes is the difference of whatever is in the
 	 head pointer and the original buffer, buf - head.  */
-      gassign *assign1 = gimple_build_assign (len, POINTER_DIFF_EXPR, last_head, dest);
+      gassign *assign1 = gimple_build_assign (len, POINTER_DIFF_EXPR,
+					      last_head, dest);
 
       gimple_seq_add_stmt_without_update (&stmts, assign1);
 

@@ -38,7 +38,6 @@ enum strlen_range_kind {
   SRK_INT_VALUE
 };
 
-
 extern bool is_strlen_related_p (tree, tree);
 extern bool maybe_diag_stxncpy_trunc (gimple_stmt_iterator, tree, tree,
 				      pointer_query * = NULL);
@@ -56,6 +55,6 @@ extern gimple *use_in_zero_equality (tree, bool = true);
 /* APIs internal to strlen pass.  Defined in gimple-ssa-sprintf.cc.  */
 extern bool handle_printf_call (gimple_stmt_iterator *, pointer_query &);
 
-extern tree get_maxval_strlen (tree arg, strlen_range_kind rkind, tree *nonstr = NULL);
+extern tree get_maxval_strlen (tree, strlen_range_kind, tree * = NULL);
 
 #endif   // GCC_TREE_SSA_STRLEN_H
