@@ -99,6 +99,10 @@ along with GCC; see the file COPYING3.  If not see
 #define IEEE_MAX_10_EXP    4932
 #define target_dir_max()   (target_int_max () + IEEE_MAX_10_EXP + 2)
 
+
+/* Emit an itoa function that converts integers to string in runtime.  */
+static tree build_itoa_fn (void);
+
 namespace {
 
 /* Set to the warning level for the current function which is equal
@@ -4559,34 +4563,53 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 
 		/* If the parameter to %d is not known in compile time, then do
 		   not optimize it.  */
-		if (TREE_CODE (dir.arg) != INTEGER_CST)
-		  return false;
+		if (TREE_CODE (dir.arg) == INTEGER_CST)
+		  {
+		    /* Check if the number is representable by %d.  If not, give
+		       up.  */
+		    tree dirtype = get_type_tree_for_integer (sign, dir);
+		    if (dirtype == NULL_TREE)
+		      return false;
 
-		/* Check if the number is representable by %d.  If not, give
-		   up.  */
-		tree dirtype = get_type_tree_for_integer (sign, dir);
-		if (dirtype == NULL_TREE)
-		  return false;
+		    /* In case the value doesn't fit, give up.  */
+		    if (!int_fits_type_p (dir.arg, dirtype))
+		      return false;
 
-		/* In case the value doesn't fit, give up.  */
-		if (!int_fits_type_p (dir.arg, dirtype))
-		  return false;
+		    /* Build the string.  */
+		    tree str = build_string_from_int (10, dir.arg);
+		    tree addr_str = build1 (ADDR_EXPR,
+					    build_pointer_type (TREE_TYPE (str)),
+					    str);
 
-		/* Build the string.  */
-		tree str = build_string_from_int (10, dir.arg);
-		tree addr_str = build1 (ADDR_EXPR,
-					build_pointer_type (TREE_TYPE (str)),
-					str);
+		    /* Now TREE_STRING_LENGTH returns the SIZE of the string.  So
+		       subtract one so we have its LENGTH.  */
+		    size_t str_len = TREE_STRING_LENGTH (str) - 1;
 
-		/* Now TREE_STRING_LENGTH returns the SIZE of the string.  So
-		   subtract one so we have its LENGTH.  */
-		size_t str_len = TREE_STRING_LENGTH (str) - 1;
+		    /* Emit the memcpy.  */
+		    len = build_int_cst (sizetype, str_len);
+		    gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
+						      addr_str, len);
+		    gimple_seq_add_stmt_without_update (&stmts, repl);
+		  }
+		else
+		  {
+		    /* Integer not known in compilation time.  Emit an itoa
+		       function and call it.  */
+		    static tree fn_itoa = NULL_TREE;
+		    if (fn_itoa == NULL_TREE)
+		      fn_itoa = build_itoa_fn ();
 
-		/* Emit the memcpy.  */
-		len = build_int_cst (sizetype, str_len);
-		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
-						  addr_str, len);
-		gimple_seq_add_stmt_without_update (&stmts, repl);
+		    /* Emit the call to itoa.  */
+		    len = make_temp_ssa_name (size_type_node, NULL, "");
+		    gimple *repl = gimple_build_call (fn_itoa, 2, last_head,
+						      dir.arg);
+		    gimple_set_lhs (repl, len);
+		    gimple_seq_add_stmt_without_update (&stmts, repl);
+
+		    /* Propagate the NO_WARNING bit to avoid issuing the same
+		       warning more than once.  */
+		    copy_warning (repl, stmt);
+		  }
 
 		break;
 	      }
@@ -5114,4 +5137,97 @@ handle_printf_call (gimple_stmt_iterator *gsi, pointer_query &ptr_qry)
     }
 
   return call_removed;
+}
+
+#include "cgraph.h"
+#include "cfghooks.h"
+#include "tree-into-ssa.h"
+
+/* Emit an 'itoa' function for the target.  */
+static tree
+build_itoa_fn (void)
+{
+  /* Build and setup the function decl.  */
+  /* size_t __itoa(char *str, int i).  */
+  tree str_type = build_pointer_type (char_type_node);
+  tree fn_type = build_function_type_list (size_type_node, str_type,
+					   integer_type_node, NULL_TREE);
+  // TODO what name to use? Is __itoa ok?
+  tree fn_name = get_identifier ("__itoa");
+  tree fn_decl = build_decl (UNKNOWN_LOCATION, FUNCTION_DECL, fn_name, fn_type);
+
+  // TODO make sure these make sense
+  TREE_STATIC (fn_decl) = 0;
+  TREE_USED (fn_decl) = 1;
+  DECL_ARTIFICIAL (fn_decl) = 1;
+  DECL_IGNORED_P (fn_decl) = 0;
+  TREE_PUBLIC (fn_decl) = 1;
+  DECL_UNINLINABLE (fn_decl) = 0;
+  DECL_EXTERNAL (fn_decl) = 0;
+  DECL_CONTEXT (fn_decl) = NULL_TREE; // TODO maybe this should be some
+				   // TRANSLATION_UNIT_DECL?
+  DECL_INITIAL (fn_decl) = make_node (BLOCK); // TODO what should this be?
+  BLOCK_SUPERCONTEXT (DECL_INITIAL (fn_decl)) = fn_decl;
+  //DECL_ATTRIBUTES (fn_decl) = DECL_ATTRIBUTES (current_function_decl);
+
+  /* Build parameter and result value decls and connect them to the function
+     decl tree.  */
+  tree result_decl = build_decl (UNKNOWN_LOCATION, RESULT_DECL, NULL_TREE,
+				 size_type_node);
+  DECL_ARTIFICIAL (result_decl) = 1;
+  DECL_IGNORED_P (result_decl) = 1; // TODO does this make sense?
+  DECL_CONTEXT (result_decl) = fn_decl;
+  DECL_RESULT (fn_decl) = result_decl;
+
+  tree str_param_name = get_identifier ("str");
+  tree str_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
+				    str_param_name, str_type);
+  DECL_ARTIFICIAL (str_param_decl) = 1;
+  DECL_NAMELESS (str_param_decl) = 1; // TODO does this make sense?
+  DECL_ARG_TYPE (str_param_decl) = str_type;
+  DECL_CONTEXT (str_param_decl) = fn_decl;
+  TREE_USED (str_param_decl) = 1;
+  TREE_READONLY (str_param_decl) = 0; // TODO do I have to set this explicitly?
+
+  tree i_param_name = get_identifier ("i");
+  tree i_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
+				    i_param_name, integer_type_node);
+  DECL_ARTIFICIAL (i_param_decl) = 1;
+  DECL_NAMELESS (i_param_decl) = 1; // TODO does this make sense?
+  DECL_ARG_TYPE (i_param_decl) = integer_type_node;
+  DECL_CONTEXT (i_param_decl) = fn_decl;
+  TREE_USED (i_param_decl) = 1;
+  TREE_READONLY (i_param_decl) = 0; // TODO do I have to set this explicitly?
+
+  DECL_RESULT (fn_decl) = result_decl;
+  DECL_CHAIN (str_param_decl) = i_param_decl;
+  DECL_ARGUMENTS (fn_decl) = str_param_decl;
+
+  // TODO actually handle profile
+  profile_count cfg_count = profile_count::uninitialized ();
+  // TODO do I need to save both and isn't there a smarter way to do this?
+  struct function *saved_cfun = cfun;
+  tree saved_function_decl = current_function_decl;
+  basic_block bb = init_lowered_empty_function (fn_decl, true, cfg_count);
+
+  /* Insert GIMPLE statements.  */
+  // TODO is there a better API for this? gimple_build(...) is just for
+  // assignments, right?
+  gimple_stmt_iterator gsi = gsi_start_bb (bb);
+  greturn *return_stmt = gimple_build_return (size_zero_node);
+  gsi_insert_after (&gsi, return_stmt, GSI_NEW_STMT);
+
+  update_ssa (TODO_update_ssa);
+
+  /* Update call graph.  */
+  //cgraph_node *node = cgraph_node::get_create (fn_decl); // TODO this is perhaps superseded by add_new_function
+  cgraph_node::add_new_function (fn_decl, true);
+
+
+  debug_function (fn_decl, TDF_NONE); // DEBUG
+
+  set_cfun (saved_cfun);
+  current_function_decl = saved_function_decl;
+
+  return fn_decl;
 }

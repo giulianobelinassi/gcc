@@ -189,8 +189,10 @@ unsigned HOST_WIDE_INT target_newline;
 unsigned HOST_WIDE_INT target_percent;
 static unsigned HOST_WIDE_INT target_c;
 static unsigned HOST_WIDE_INT target_s;
+static unsigned HOST_WIDE_INT target_d;
 char target_percent_c[3];
 char target_percent_s[3];
+char target_percent_d[3];
 char target_percent_s_newline[4];
 static tree do_mpfr_remquo (tree, tree, tree);
 static tree do_mpfr_lgamma_r (tree, tree, tree);
@@ -12072,6 +12074,7 @@ init_target_chars (void)
       target_percent = lang_hooks.to_target_charset ('%');
       target_c = lang_hooks.to_target_charset ('c');
       target_s = lang_hooks.to_target_charset ('s');
+      target_d = lang_hooks.to_target_charset ('d');
       if (target_newline == 0 || target_percent == 0 || target_c == 0
 	  || target_s == 0)
 	return false;
@@ -12083,6 +12086,10 @@ init_target_chars (void)
       target_percent_s[0] = target_percent;
       target_percent_s[1] = target_s;
       target_percent_s[2] = '\0';
+
+      target_percent_d[0] = target_percent;
+      target_percent_d[1] = target_d;
+      target_percent_d[2] = '\0';
 
       target_percent_s_newline[0] = target_percent;
       target_percent_s_newline[1] = target_s;
