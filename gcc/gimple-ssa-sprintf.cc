@@ -88,6 +88,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "tree-ssa-strlen.h"
 #include "tree-dfa.h"
 
+bool run_early_inliner = false;
+
 /* The likely worst case value of MB_LEN_MAX for the target, large enough
    for UTF-8.  Ideally, this would be obtained by a target hook if it were
    to be used for optimization but it's good enough as is for warnings.  */
@@ -4439,9 +4441,16 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 
 	  /* Convert sprintf (str, fmt) into memcpy (str, fmt, len+1) when
 	     'format' is known to contain no % formats.  */
-	  gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
-					    addr_directive_fmt, len);
+	  gcall *repl = gimple_build_call (fn_memcpy, 3, last_head,
+					   addr_directive_fmt, len);
 	  gimple_seq_add_stmt_without_update (&stmts, repl);
+
+#if 0
+	  /* Add the edge from the current function to memcpy.  */
+	  cgraph_node::get (cfun->decl)->create_edge
+	    (cgraph_node::get_create (fn_memcpy), repl,
+	     gimple_bb (stmt)->count);
+#endif
 
 	  /* Propagate the NO_WARNING bit to avoid issuing the same
 	     warning more than once.  */
@@ -4499,7 +4508,7 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		    /* We can not.  Create a call to strlen to find the length
 		       of str2.  */
 
-		    gimple *strlencall;
+		    gcall *strlencall;
 		    if (dir.prec[1] >= 0)
 		      {
 			/* We need strnlen for this.  */
@@ -4527,13 +4536,29 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		    len = make_temp_ssa_name (size_type_node, NULL, "");
 		    gimple_call_set_lhs (strlencall, len);
 		    gimple_seq_add_stmt_without_update (&stmts, strlencall);
+
+#if 0
+		    /* Add the edge from the current function to strlen or
+		       strnlen.  */
+		    tree strlen_decl = gimple_call_fndecl (strlencall);
+		    cgraph_node::get (cfun->decl)->create_edge
+		      (cgraph_node::get_create (strlen_decl), strlencall,
+		       gimple_bb (stmt)->count);
+#endif
 		  }
 
 		/* Convert sprintf (str1, "%s", str2) into
 		   memcpy (str1, str2, len).  */
-		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
-						  dir.arg, len);
+		gcall *repl = gimple_build_call (fn_memcpy, 3, last_head,
+						 dir.arg, len);
 		gimple_seq_add_stmt_without_update (&stmts, repl);
+
+#if 0
+		/* Add the edge from the current function to memcpy.  */
+		cgraph_node::get (cfun->decl)->create_edge
+		  (cgraph_node::get_create (fn_memcpy), repl,
+		   gimple_bb (stmt)->count);
+#endif
 
 		/* Propagate the NO_WARNING bit to avoid issuing the same
 		   warning more than once.  */
@@ -4587,22 +4612,58 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 
 		    /* Emit the memcpy.  */
 		    len = build_int_cst (sizetype, str_len);
-		    gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
-						      addr_str, len);
+		    gcall *repl = gimple_build_call (fn_memcpy, 3, last_head,
+						     addr_str, len);
 		    gimple_seq_add_stmt_without_update (&stmts, repl);
 		  }
 		else
 		  {
 		    /* Integer not known in compilation time.  Emit an itoa
 		       function and call it.  */
+		    tree dirtype = get_type_tree_for_integer (sign, dir);
+		    if (dirtype == NULL_TREE)
+		      return false;
+
+		    /* itoa takes a long int, so give up on types it can't
+		       represent all values of.  */
+		    unsigned long_prec = TYPE_PRECISION (long_integer_type_node);
+		    if (TYPE_PRECISION (dirtype) > long_prec
+			|| (TYPE_UNSIGNED (dirtype)
+			    && TYPE_PRECISION (dirtype) == long_prec))
+		      return false;
+
 		    static tree fn_itoa = NULL_TREE;
 		    if (fn_itoa == NULL_TREE)
 		      fn_itoa = build_itoa_fn ();
 
+		    run_early_inliner = true;
+
+		    /* Convert the argument to the type expected by the
+		       directive first, so that e.g. %hhd truncates it, and
+		       then to the long int itoa takes.  */
+		    tree arg = dir.arg;
+		    if (!useless_type_conversion_p (dirtype, TREE_TYPE (arg)))
+		      {
+			arg = make_temp_ssa_name (dirtype, NULL, "");
+			gassign *conv = gimple_build_assign (arg, NOP_EXPR,
+							     dir.arg);
+			gimple_seq_add_stmt_without_update (&stmts, conv);
+		      }
+		    if (!useless_type_conversion_p (long_integer_type_node,
+						    dirtype))
+		      {
+			tree larg = make_temp_ssa_name (long_integer_type_node,
+							NULL, "");
+			gassign *conv = gimple_build_assign (larg, NOP_EXPR,
+							     arg);
+			gimple_seq_add_stmt_without_update (&stmts, conv);
+			arg = larg;
+		      }
+
 		    /* Emit the call to itoa.  */
 		    len = make_temp_ssa_name (size_type_node, NULL, "");
-		    gimple *repl = gimple_build_call (fn_itoa, 2, last_head,
-						      dir.arg);
+		    gcall *repl = gimple_build_call (fn_itoa, 2, last_head,
+						     arg);
 		    gimple_set_lhs (repl, len);
 		    gimple_seq_add_stmt_without_update (&stmts, repl);
 
@@ -5148,10 +5209,10 @@ static tree
 build_itoa_fn (void)
 {
   /* Build and setup the function decl.  */
-  /* size_t __itoa(char *str, int i).  */
+  /* size_t __itoa(char *str, long int i).  */
   tree str_type = build_pointer_type (char_type_node);
   tree fn_type = build_function_type_list (size_type_node, str_type,
-					   integer_type_node, NULL_TREE);
+					   long_integer_type_node, NULL_TREE);
   // TODO what name to use? Is __itoa ok?
   tree fn_name = get_identifier ("__itoa");
   tree fn_decl = build_decl (UNKNOWN_LOCATION, FUNCTION_DECL, fn_name, fn_type);
@@ -5161,7 +5222,10 @@ build_itoa_fn (void)
   TREE_USED (fn_decl) = 1;
   DECL_ARTIFICIAL (fn_decl) = 1;
   DECL_IGNORED_P (fn_decl) = 0;
-  TREE_PUBLIC (fn_decl) = 1;
+  TREE_PUBLIC (fn_decl) = 0;
+  DECL_DECLARED_INLINE_P (fn_decl) = 1;
+  /* __itoa is too big for the early inliner's limits, so bypass them.  */
+  DECL_DISREGARD_INLINE_LIMITS (fn_decl) = 1;
   DECL_UNINLINABLE (fn_decl) = 0;
   DECL_EXTERNAL (fn_decl) = 0;
   DECL_CONTEXT (fn_decl) = NULL_TREE; // TODO maybe this should be some
@@ -5191,10 +5255,10 @@ build_itoa_fn (void)
 
   tree i_param_name = get_identifier ("i");
   tree i_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
-				    i_param_name, integer_type_node);
+				    i_param_name, long_integer_type_node);
   DECL_ARTIFICIAL (i_param_decl) = 1;
   DECL_NAMELESS (i_param_decl) = 1; // TODO does this make sense?
-  DECL_ARG_TYPE (i_param_decl) = integer_type_node;
+  DECL_ARG_TYPE (i_param_decl) = long_integer_type_node;
   DECL_CONTEXT (i_param_decl) = fn_decl;
   TREE_USED (i_param_decl) = 1;
   TREE_READONLY (i_param_decl) = 0; // TODO do I have to set this explicitly?
@@ -5208,21 +5272,179 @@ build_itoa_fn (void)
   // TODO do I need to save both and isn't there a smarter way to do this?
   struct function *saved_cfun = cfun;
   tree saved_function_decl = current_function_decl;
-  basic_block bb = init_lowered_empty_function (fn_decl, true, cfg_count);
+  basic_block entry_bb = init_lowered_empty_function (fn_decl, true,
+						      cfg_count);
 
-  /* Insert GIMPLE statements.  */
-  // TODO is there a better API for this? gimple_build(...) is just for
-  // assignments, right?
-  gimple_stmt_iterator gsi = gsi_start_bb (bb);
-  greturn *return_stmt = gimple_build_return (size_zero_node);
-  gsi_insert_after (&gsi, return_stmt, GSI_NEW_STMT);
+  /* Build the body below.  Temporaries are plain registers rather than SSA
+     names; update_ssa rewrites them into SSA form and inserts the PHIs.
+
+       entry_bb:
+	 u = ABSU_EXPR <i>;
+	 neg = i < 0;
+	 len = (size_t) neg;
+	 t = u;
+
+       count_bb:		  Count the digits.
+	 len = len + 1;
+	 t = t / 10;
+	 if (t != 0) goto count_bb; else goto sign_bb;
+
+       sign_bb:
+	 p = str + len;
+	 if (neg != 0) goto minus_bb; else goto digits_bb;
+
+       minus_bb:
+	 *str = '-';
+
+       digits_bb:		  Write the digits backwards.
+	 p = p + -1;
+	 d = u % 10;
+	 d = d + '0';
+	 c = (char) d;
+	 *p = c;
+	 u = u / 10;
+	 if (u != 0) goto digits_bb; else goto return_bb;
+
+       return_bb:
+	 return len;
+
+     Using the absolute value as an unsigned long makes LONG_MIN work.  The
+     terminating '\0' is not written, it is up to the caller.  */
+
+  tree ulong_type = long_unsigned_type_node;
+  tree char_ptr_zero = build_int_cst (str_type, 0);
+  tree ten = build_int_cst (ulong_type, 10);
+  tree target_zero = build_int_cst (ulong_type,
+				    lang_hooks.to_target_charset ('0'));
+  tree target_minus = build_int_cst (char_type_node,
+				     lang_hooks.to_target_charset ('-'));
+
+  tree u = create_tmp_reg (ulong_type, "u");
+  tree t = create_tmp_reg (ulong_type, "t");
+  tree d = create_tmp_reg (ulong_type, "d");
+  tree neg = create_tmp_reg (boolean_type_node, "neg");
+  tree len = create_tmp_reg (size_type_node, "len");
+  tree p = create_tmp_reg (str_type, "p");
+  tree c = create_tmp_reg (char_type_node, "c");
+
+  /* Create the basic blocks.  */
+  basic_block count_bb = create_basic_block (NULL, entry_bb);
+  basic_block sign_bb = create_basic_block (NULL, count_bb);
+  basic_block minus_bb = create_basic_block (NULL, sign_bb);
+  basic_block digits_bb = create_basic_block (NULL, minus_bb);
+  basic_block return_bb = create_basic_block (NULL, digits_bb);
+
+  class loop *root_loop = entry_bb->loop_father;
+  add_bb_to_loop (count_bb, root_loop);
+  add_bb_to_loop (sign_bb, root_loop);
+  add_bb_to_loop (minus_bb, root_loop);
+  add_bb_to_loop (digits_bb, root_loop);
+  add_bb_to_loop (return_bb, root_loop);
+
+  /* Connect them.  The entry block is initially connected to the exit
+     block.  */
+  remove_edge (single_succ_edge (entry_bb));
+  make_single_succ_edge (entry_bb, count_bb, EDGE_FALLTHRU);
+
+  edge e = make_edge (count_bb, count_bb, EDGE_TRUE_VALUE);
+  e->probability = profile_probability::likely ();
+  e = make_edge (count_bb, sign_bb, EDGE_FALSE_VALUE);
+  e->probability = profile_probability::unlikely ();
+
+  e = make_edge (sign_bb, minus_bb, EDGE_TRUE_VALUE);
+  e->probability = profile_probability::even ();
+  e = make_edge (sign_bb, digits_bb, EDGE_FALSE_VALUE);
+  e->probability = profile_probability::even ();
+
+  make_single_succ_edge (minus_bb, digits_bb, EDGE_FALLTHRU);
+
+  e = make_edge (digits_bb, digits_bb, EDGE_TRUE_VALUE);
+  e->probability = profile_probability::likely ();
+  e = make_edge (digits_bb, return_bb, EDGE_FALSE_VALUE);
+  e->probability = profile_probability::unlikely ();
+
+  make_single_succ_edge (return_bb, EXIT_BLOCK_PTR_FOR_FN (cfun), 0);
+
+  /* Register both loops in the loop tree.  add_loop needs dominators to
+     find the loop body.  */
+  calculate_dominance_info (CDI_DOMINATORS);
+  class loop *count_loop = alloc_loop ();
+  count_loop->header = count_loop->latch = count_bb;
+  add_loop (count_loop, root_loop);
+
+  class loop *digits_loop = alloc_loop ();
+  digits_loop->header = digits_loop->latch = digits_bb;
+  add_loop (digits_loop, root_loop);
+
+  /* Fill entry_bb.  */
+  gimple_stmt_iterator gsi = gsi_start_bb (entry_bb);
+  gimple *g = gimple_build_assign (u, ABSU_EXPR, i_param_decl);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (neg, LT_EXPR, i_param_decl,
+			   build_zero_cst (long_integer_type_node));
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (len, NOP_EXPR, neg);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (t, u);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  /* Fill count_bb.  */
+  gsi = gsi_start_bb (count_bb);
+  g = gimple_build_assign (len, PLUS_EXPR, len,
+			   build_one_cst (size_type_node));
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (t, TRUNC_DIV_EXPR, t, ten);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_cond (NE_EXPR, t, build_zero_cst (ulong_type),
+			 NULL_TREE, NULL_TREE);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  /* Fill sign_bb.  */
+  gsi = gsi_start_bb (sign_bb);
+  g = gimple_build_assign (p, POINTER_PLUS_EXPR, str_param_decl, len);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_cond (NE_EXPR, neg, boolean_false_node,
+			 NULL_TREE, NULL_TREE);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  /* Fill minus_bb.  */
+  gsi = gsi_start_bb (minus_bb);
+  g = gimple_build_assign (build2 (MEM_REF, char_type_node, str_param_decl,
+				   char_ptr_zero),
+			   target_minus);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  /* Fill digits_bb.  */
+  gsi = gsi_start_bb (digits_bb);
+  g = gimple_build_assign (p, POINTER_PLUS_EXPR, p,
+			   build_minus_one_cst (sizetype));
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (d, TRUNC_MOD_EXPR, u, ten);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (d, PLUS_EXPR, d, target_zero);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (c, NOP_EXPR, d);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (build2 (MEM_REF, char_type_node, p, char_ptr_zero),
+			   c);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (u, TRUNC_DIV_EXPR, u, ten);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_cond (NE_EXPR, u, build_zero_cst (ulong_type),
+			 NULL_TREE, NULL_TREE);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  /* Fill return_bb.  */
+  gsi = gsi_start_bb (return_bb);
+  g = gimple_build_return (len);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
 
   update_ssa (TODO_update_ssa);
+  free_dominance_info (CDI_DOMINATORS);
 
   /* Update call graph.  */
   //cgraph_node *node = cgraph_node::get_create (fn_decl); // TODO this is perhaps superseded by add_new_function
   cgraph_node::add_new_function (fn_decl, true);
-
 
   debug_function (fn_decl, TDF_NONE); // DEBUG
 

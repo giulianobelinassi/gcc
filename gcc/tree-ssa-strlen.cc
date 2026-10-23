@@ -5998,6 +5998,12 @@ strlen_pass::after_dom_children (basic_block bb)
     }
 }
 
+extern bool run_early_inliner;
+extern int early_inliner (function *);
+void inline_analyze_function (cgraph_node *);
+void ipa_free_all_node_params (void);
+void ipa_free_all_edge_args (void);
+
 namespace {
 
 static unsigned int
@@ -6051,7 +6057,33 @@ printf_strlen_execute (function *fun, bool warn_only)
   loop_optimizer_finalize ();
   free_dominance_info (CDI_POST_DOMINATORS);
 
-  return walker.m_cleanup_cfg ? TODO_cleanup_cfg : 0;
+  unsigned todo = 0;
+  if (run_early_inliner)
+    {
+      if (dump_file)
+        fprintf (dump_file, "running early inliner on %s\n", function_name (cfun));
+      printf ("running early inliner on %s\n", function_name (cfun));
+      cgraph_edge::rebuild_edges ();
+
+      tree name = get_identifier ("__itoa");
+      cgraph_node *node;
+      FOR_EACH_FUNCTION (node)
+      {
+        if (DECL_NAME (node->decl) == name)
+          break;
+      }
+
+      if (!node->analyzed)
+	node->analyze ();
+      inline_analyze_function (node);
+      inline_analyze_function (cgraph_node::get (fun->decl));
+      ipa_free_all_node_params ();
+      ipa_free_all_edge_args ();
+      todo |= early_inliner (fun);
+      run_early_inliner = false;
+    }
+
+  return todo | (walker.m_cleanup_cfg ? TODO_cleanup_cfg : 0);
 }
 
 /* This file defines two passes: one for warnings that runs only when
