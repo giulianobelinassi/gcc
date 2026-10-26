@@ -102,8 +102,14 @@ bool run_early_inliner = false;
 #define target_dir_max()   (target_int_max () + IEEE_MAX_10_EXP + 2)
 
 
-/* Emit an itoa function that converts integers to string in runtime.  */
+/* Emit utoa and itoa functions that convert unsigned and signed integers to
+   string in runtime.  */
+static tree build_utoa_fn (void);
 static tree build_itoa_fn (void);
+
+/* Emitted utoa and itoa functions in the translation unit.  */
+static GTY(()) tree utoa_fn;
+static GTY(()) tree itoa_fn;
 
 namespace {
 
@@ -4586,16 +4592,16 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		if (dir.prec[1] >= 0)
 		  return false;
 
+		/* Check if the number is representable by directive.  If
+		   not, give up.  */
+		tree dirtype = get_type_tree_for_integer (sign, dir);
+		if (dirtype == NULL_TREE)
+		  return false;
+
 		/* If the parameter to %d is not known in compile time, then do
 		   not optimize it.  */
 		if (TREE_CODE (dir.arg) == INTEGER_CST)
 		  {
-		    /* Check if the number is representable by %d.  If not, give
-		       up.  */
-		    tree dirtype = get_type_tree_for_integer (sign, dir);
-		    if (dirtype == NULL_TREE)
-		      return false;
-
 		    /* In case the value doesn't fit, give up.  */
 		    if (!int_fits_type_p (dir.arg, dirtype))
 		      return false;
@@ -4615,59 +4621,76 @@ gimple_fold_builtin_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		    gcall *repl = gimple_build_call (fn_memcpy, 3, last_head,
 						     addr_str, len);
 		    gimple_seq_add_stmt_without_update (&stmts, repl);
+
+		    /* propagate the no_warning bit to avoid issuing the same
+		       warning more than once.  */
+		    copy_warning (repl, stmt);
 		  }
 		else
 		  {
-		    /* Integer not known in compilation time.  Emit an itoa
-		       function and call it.  */
-		    tree dirtype = get_type_tree_for_integer (sign, dir);
-		    if (dirtype == NULL_TREE)
+		    /* Integer not known in compilation time.  Emit an itoa or
+		       utoa function and call it.  itoa takes a long int and
+		       utoa an unsigned long int, so give up on wider types.  */
+		    if (TYPE_PRECISION (dirtype)
+			> TYPE_PRECISION (long_integer_type_node))
 		      return false;
 
-		    /* itoa takes a long int, so give up on types it can't
-		       represent all values of.  */
-		    unsigned long_prec = TYPE_PRECISION (long_integer_type_node);
-		    if (TYPE_PRECISION (dirtype) > long_prec
-			|| (TYPE_UNSIGNED (dirtype)
-			    && TYPE_PRECISION (dirtype) == long_prec))
-		      return false;
+		    tree fn;
+		    tree fn_arg_type;
+		    if (sign)
+		      {
+			/* If itoa wasn't emit and we need it, emit it now.  */
+			if (itoa_fn == NULL_TREE)
+			  itoa_fn = build_itoa_fn ();
 
-		    static tree fn_itoa = NULL_TREE;
-		    if (fn_itoa == NULL_TREE)
-		      fn_itoa = build_itoa_fn ();
+			fn = itoa_fn;
+			fn_arg_type = long_integer_type_node;
+		      }
+		    else
+		      {
+			/* If utoa wasn't emit and we need it, emit it now.  */
+			if (utoa_fn == NULL_TREE)
+			  utoa_fn = build_utoa_fn ();
 
-		    run_early_inliner = true;
+			fn = utoa_fn;
+			fn_arg_type = long_unsigned_type_node;
+		      }
+
+		    run_early_inliner = false;
 
 		    /* Convert the argument to the type expected by the
 		       directive first, so that e.g. %hhd truncates it, and
-		       then to the long int itoa takes.  */
-		    tree arg = dir.arg;
-		    if (!useless_type_conversion_p (dirtype, TREE_TYPE (arg)))
+		       then to the type the function takes.  */
+		    tree arg;
+		    if (useless_type_conversion_p (dirtype,
+						   TREE_TYPE (dir.arg)))
+		      arg = dir.arg;
+		    else
 		      {
 			arg = make_temp_ssa_name (dirtype, NULL, "");
 			gassign *conv = gimple_build_assign (arg, NOP_EXPR,
 							     dir.arg);
 			gimple_seq_add_stmt_without_update (&stmts, conv);
 		      }
-		    if (!useless_type_conversion_p (long_integer_type_node,
-						    dirtype))
+
+		    /* Now convert to long int or unsigned long int, according
+		       to itoa or utoa.  */
+		    if (!useless_type_conversion_p (fn_arg_type, dirtype))
 		      {
-			tree larg = make_temp_ssa_name (long_integer_type_node,
-							NULL, "");
+			tree larg = make_temp_ssa_name (fn_arg_type, NULL, "");
 			gassign *conv = gimple_build_assign (larg, NOP_EXPR,
 							     arg);
 			gimple_seq_add_stmt_without_update (&stmts, conv);
 			arg = larg;
 		      }
 
-		    /* Emit the call to itoa.  */
+		    /* Emit the call to itoa or utoa.  */
 		    len = make_temp_ssa_name (size_type_node, NULL, "");
-		    gcall *repl = gimple_build_call (fn_itoa, 2, last_head,
-						     arg);
+		    gcall *repl = gimple_build_call (fn, 2, last_head, arg);
 		    gimple_set_lhs (repl, len);
 		    gimple_seq_add_stmt_without_update (&stmts, repl);
 
-		    /* Propagate the NO_WARNING bit to avoid issuing the same
+		    /* propagate the no_warning bit to avoid issuing the same
 		       warning more than once.  */
 		    copy_warning (repl, stmt);
 		  }
@@ -5204,74 +5227,76 @@ handle_printf_call (gimple_stmt_iterator *gsi, pointer_query &ptr_qry)
 #include "cfghooks.h"
 #include "tree-into-ssa.h"
 
-/* Emit an 'itoa' function for the target.  */
+/* Build the decl of a function NAME with signature
+   size_t NAME (char *str, VAL_TYPE val), as used by the integer to string
+   conversion functions below.  */
 static tree
-build_itoa_fn (void)
+build_conversion_fn_decl (const char *name, tree val_type)
 {
   /* Build and setup the function decl.  */
-  /* size_t __itoa(char *str, long int i).  */
   tree str_type = build_pointer_type (char_type_node);
   tree fn_type = build_function_type_list (size_type_node, str_type,
-					   long_integer_type_node, NULL_TREE);
-  // TODO what name to use? Is __itoa ok?
-  tree fn_name = get_identifier ("__itoa");
-  tree fn_decl = build_decl (UNKNOWN_LOCATION, FUNCTION_DECL, fn_name, fn_type);
+					   val_type, NULL_TREE);
+  tree fn_decl = build_decl (UNKNOWN_LOCATION, FUNCTION_DECL,
+			     get_identifier (name), fn_type);
 
-  // TODO make sure these make sense
-  TREE_STATIC (fn_decl) = 0;
+  /* Give it a private assembler name so that it never clashes with a
+     function of the same name in the user's code.  */
+  char *asm_name;
+  ASM_FORMAT_PRIVATE_NAME (asm_name, name, 0);
+  SET_DECL_ASSEMBLER_NAME (fn_decl, get_identifier (asm_name));
+
+  TREE_STATIC (fn_decl) = 1;
   TREE_USED (fn_decl) = 1;
   DECL_ARTIFICIAL (fn_decl) = 1;
-  DECL_IGNORED_P (fn_decl) = 0;
-  TREE_PUBLIC (fn_decl) = 0;
+  DECL_IGNORED_P (fn_decl) = 1;
   DECL_DECLARED_INLINE_P (fn_decl) = 1;
-  /* __itoa is too big for the early inliner's limits, so bypass them.  */
-  DECL_DISREGARD_INLINE_LIMITS (fn_decl) = 1;
-  DECL_UNINLINABLE (fn_decl) = 0;
-  DECL_EXTERNAL (fn_decl) = 0;
-  DECL_CONTEXT (fn_decl) = NULL_TREE; // TODO maybe this should be some
-				   // TRANSLATION_UNIT_DECL?
-  DECL_INITIAL (fn_decl) = make_node (BLOCK); // TODO what should this be?
-  BLOCK_SUPERCONTEXT (DECL_INITIAL (fn_decl)) = fn_decl;
-  //DECL_ATTRIBUTES (fn_decl) = DECL_ATTRIBUTES (current_function_decl);
 
   /* Build parameter and result value decls and connect them to the function
      decl tree.  */
   tree result_decl = build_decl (UNKNOWN_LOCATION, RESULT_DECL, NULL_TREE,
 				 size_type_node);
   DECL_ARTIFICIAL (result_decl) = 1;
-  DECL_IGNORED_P (result_decl) = 1; // TODO does this make sense?
+  DECL_IGNORED_P (result_decl) = 1;
   DECL_CONTEXT (result_decl) = fn_decl;
   DECL_RESULT (fn_decl) = result_decl;
 
-  tree str_param_name = get_identifier ("str");
   tree str_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
-				    str_param_name, str_type);
+				    get_identifier ("str"), str_type);
   DECL_ARTIFICIAL (str_param_decl) = 1;
-  DECL_NAMELESS (str_param_decl) = 1; // TODO does this make sense?
+  DECL_NAMELESS (str_param_decl) = 1;
   DECL_ARG_TYPE (str_param_decl) = str_type;
   DECL_CONTEXT (str_param_decl) = fn_decl;
   TREE_USED (str_param_decl) = 1;
-  TREE_READONLY (str_param_decl) = 0; // TODO do I have to set this explicitly?
 
-  tree i_param_name = get_identifier ("i");
-  tree i_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
-				    i_param_name, long_integer_type_node);
-  DECL_ARTIFICIAL (i_param_decl) = 1;
-  DECL_NAMELESS (i_param_decl) = 1; // TODO does this make sense?
-  DECL_ARG_TYPE (i_param_decl) = long_integer_type_node;
-  DECL_CONTEXT (i_param_decl) = fn_decl;
-  TREE_USED (i_param_decl) = 1;
-  TREE_READONLY (i_param_decl) = 0; // TODO do I have to set this explicitly?
+  tree val_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
+				    get_identifier ("val"), val_type);
+  DECL_ARTIFICIAL (val_param_decl) = 1;
+  DECL_NAMELESS (val_param_decl) = 1;
+  DECL_ARG_TYPE (val_param_decl) = val_type;
+  DECL_CONTEXT (val_param_decl) = fn_decl;
+  TREE_USED (val_param_decl) = 1;
 
-  DECL_RESULT (fn_decl) = result_decl;
-  DECL_CHAIN (str_param_decl) = i_param_decl;
+  DECL_CHAIN (str_param_decl) = val_param_decl;
   DECL_ARGUMENTS (fn_decl) = str_param_decl;
+
+  return fn_decl;
+}
+
+/* Emit a 'utoa' function for the target.  */
+static tree
+build_utoa_fn (void)
+{
+  /* size_t __utoa (char *str, unsigned long int val).  */
+  tree ulong_type = long_unsigned_type_node;
+  tree fn_decl = build_conversion_fn_decl ("__utoa", ulong_type);
+  tree str_param_decl = DECL_ARGUMENTS (fn_decl);
+  tree u_param_decl = DECL_CHAIN (str_param_decl);
+  tree str_type = TREE_TYPE (str_param_decl);
 
   // TODO actually handle profile
   profile_count cfg_count = profile_count::uninitialized ();
-  // TODO do I need to save both and isn't there a smarter way to do this?
-  struct function *saved_cfun = cfun;
-  tree saved_function_decl = current_function_decl;
+  push_cfun (cfun);
   basic_block entry_bb = init_lowered_empty_function (fn_decl, true,
 						      cfg_count);
 
@@ -5279,22 +5304,17 @@ build_itoa_fn (void)
      names; update_ssa rewrites them into SSA form and inserts the PHIs.
 
        entry_bb:
-	 u = ABSU_EXPR <i>;
-	 neg = i < 0;
-	 len = (size_t) neg;
+	 u = val;
+	 len = 0;
 	 t = u;
 
        count_bb:		  Count the digits.
 	 len = len + 1;
 	 t = t / 10;
-	 if (t != 0) goto count_bb; else goto sign_bb;
+	 if (t != 0) goto count_bb; else goto end_bb;
 
-       sign_bb:
+       end_bb:
 	 p = str + len;
-	 if (neg != 0) goto minus_bb; else goto digits_bb;
-
-       minus_bb:
-	 *str = '-';
 
        digits_bb:		  Write the digits backwards.
 	 p = p + -1;
@@ -5308,36 +5328,29 @@ build_itoa_fn (void)
        return_bb:
 	 return len;
 
-     Using the absolute value as an unsigned long makes LONG_MIN work.  The
-     terminating '\0' is not written, it is up to the caller.  */
+     The terminating '\0' is not written, it is up to the caller.  */
 
-  tree ulong_type = long_unsigned_type_node;
   tree char_ptr_zero = build_int_cst (str_type, 0);
   tree ten = build_int_cst (ulong_type, 10);
   tree target_zero = build_int_cst (ulong_type,
 				    lang_hooks.to_target_charset ('0'));
-  tree target_minus = build_int_cst (char_type_node,
-				     lang_hooks.to_target_charset ('-'));
 
   tree u = create_tmp_reg (ulong_type, "u");
   tree t = create_tmp_reg (ulong_type, "t");
   tree d = create_tmp_reg (ulong_type, "d");
-  tree neg = create_tmp_reg (boolean_type_node, "neg");
   tree len = create_tmp_reg (size_type_node, "len");
   tree p = create_tmp_reg (str_type, "p");
   tree c = create_tmp_reg (char_type_node, "c");
 
   /* Create the basic blocks.  */
   basic_block count_bb = create_basic_block (NULL, entry_bb);
-  basic_block sign_bb = create_basic_block (NULL, count_bb);
-  basic_block minus_bb = create_basic_block (NULL, sign_bb);
-  basic_block digits_bb = create_basic_block (NULL, minus_bb);
+  basic_block end_bb = create_basic_block (NULL, count_bb);
+  basic_block digits_bb = create_basic_block (NULL, end_bb);
   basic_block return_bb = create_basic_block (NULL, digits_bb);
 
   class loop *root_loop = entry_bb->loop_father;
   add_bb_to_loop (count_bb, root_loop);
-  add_bb_to_loop (sign_bb, root_loop);
-  add_bb_to_loop (minus_bb, root_loop);
+  add_bb_to_loop (end_bb, root_loop);
   add_bb_to_loop (digits_bb, root_loop);
   add_bb_to_loop (return_bb, root_loop);
 
@@ -5348,15 +5361,10 @@ build_itoa_fn (void)
 
   edge e = make_edge (count_bb, count_bb, EDGE_TRUE_VALUE);
   e->probability = profile_probability::likely ();
-  e = make_edge (count_bb, sign_bb, EDGE_FALSE_VALUE);
+  e = make_edge (count_bb, end_bb, EDGE_FALSE_VALUE);
   e->probability = profile_probability::unlikely ();
 
-  e = make_edge (sign_bb, minus_bb, EDGE_TRUE_VALUE);
-  e->probability = profile_probability::even ();
-  e = make_edge (sign_bb, digits_bb, EDGE_FALSE_VALUE);
-  e->probability = profile_probability::even ();
-
-  make_single_succ_edge (minus_bb, digits_bb, EDGE_FALLTHRU);
+  make_single_succ_edge (end_bb, digits_bb, EDGE_FALLTHRU);
 
   e = make_edge (digits_bb, digits_bb, EDGE_TRUE_VALUE);
   e->probability = profile_probability::likely ();
@@ -5378,12 +5386,9 @@ build_itoa_fn (void)
 
   /* Fill entry_bb.  */
   gimple_stmt_iterator gsi = gsi_start_bb (entry_bb);
-  gimple *g = gimple_build_assign (u, ABSU_EXPR, i_param_decl);
+  gimple *g = gimple_build_assign (u, u_param_decl);
   gsi_insert_after (&gsi, g, GSI_NEW_STMT);
-  g = gimple_build_assign (neg, LT_EXPR, i_param_decl,
-			   build_zero_cst (long_integer_type_node));
-  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
-  g = gimple_build_assign (len, NOP_EXPR, neg);
+  g = gimple_build_assign (len, build_zero_cst (size_type_node));
   gsi_insert_after (&gsi, g, GSI_NEW_STMT);
   g = gimple_build_assign (t, u);
   gsi_insert_after (&gsi, g, GSI_NEW_STMT);
@@ -5399,19 +5404,9 @@ build_itoa_fn (void)
 			 NULL_TREE, NULL_TREE);
   gsi_insert_after (&gsi, g, GSI_NEW_STMT);
 
-  /* Fill sign_bb.  */
-  gsi = gsi_start_bb (sign_bb);
+  /* Fill end_bb.  */
+  gsi = gsi_start_bb (end_bb);
   g = gimple_build_assign (p, POINTER_PLUS_EXPR, str_param_decl, len);
-  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
-  g = gimple_build_cond (NE_EXPR, neg, boolean_false_node,
-			 NULL_TREE, NULL_TREE);
-  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
-
-  /* Fill minus_bb.  */
-  gsi = gsi_start_bb (minus_bb);
-  g = gimple_build_assign (build2 (MEM_REF, char_type_node, str_param_decl,
-				   char_ptr_zero),
-			   target_minus);
   gsi_insert_after (&gsi, g, GSI_NEW_STMT);
 
   /* Fill digits_bb.  */
@@ -5443,13 +5438,128 @@ build_itoa_fn (void)
   free_dominance_info (CDI_DOMINATORS);
 
   /* Update call graph.  */
-  //cgraph_node *node = cgraph_node::get_create (fn_decl); // TODO this is perhaps superseded by add_new_function
   cgraph_node::add_new_function (fn_decl, true);
 
-  debug_function (fn_decl, TDF_NONE); // DEBUG
-
-  set_cfun (saved_cfun);
-  current_function_decl = saved_function_decl;
+  pop_cfun ();
 
   return fn_decl;
 }
+
+/* Emit an 'itoa' function for the target, which handles the sign and
+   forwards the absolute value to the 'utoa' function.  */
+static tree
+build_itoa_fn (void)
+{
+  /* In case the utoa_fn wasn't build, build it now.  */
+  if (utoa_fn == NULL_TREE)
+    utoa_fn = build_utoa_fn ();
+
+  /* size_t __itoa (char *str, long int val).  */
+  tree fn_decl = build_conversion_fn_decl ("__itoa", long_integer_type_node);
+  tree str_param_decl = DECL_ARGUMENTS (fn_decl);
+  tree i_param_decl = DECL_CHAIN (str_param_decl);
+  tree str_type = TREE_TYPE (str_param_decl);
+
+  // TODO actually handle profile
+  profile_count cfg_count = profile_count::uninitialized ();
+  push_cfun (cfun);
+  basic_block entry_bb = init_lowered_empty_function (fn_decl, true,
+						      cfg_count);
+
+  /* Build the body below.  Temporaries are plain registers rather than SSA
+     names; update_ssa rewrites them into SSA form.
+
+       entry_bb:
+	 u = ABSU_EXPR <val>;
+	 neg = val < 0;
+	 if (neg != 0) goto minus_bb; else goto call_bb;
+
+       minus_bb:
+	 *str = '-';
+
+       call_bb:
+	 off = (size_t) neg;
+	 p = str + off;
+	 len = __utoa (p, u);
+	 len = len + off;
+	 return len;
+
+     Using the absolute value as an unsigned long makes LONG_MIN work.  */
+
+  tree char_ptr_zero = build_int_cst (str_type, 0);
+  tree target_minus = build_int_cst (char_type_node,
+				     lang_hooks.to_target_charset ('-'));
+
+  tree u = create_tmp_reg (long_unsigned_type_node, "u");
+  tree neg = create_tmp_reg (boolean_type_node, "neg");
+  tree off = create_tmp_reg (size_type_node, "off");
+  tree p = create_tmp_reg (str_type, "p");
+  tree len = create_tmp_reg (size_type_node, "len");
+
+  /* Create the basic blocks.  */
+  basic_block minus_bb = create_basic_block (NULL, entry_bb);
+  basic_block call_bb = create_basic_block (NULL, minus_bb);
+
+  class loop *root_loop = entry_bb->loop_father;
+  add_bb_to_loop (minus_bb, root_loop);
+  add_bb_to_loop (call_bb, root_loop);
+
+  /* Connect them.  The entry block is initially connected to the exit
+     block.  */
+  remove_edge (single_succ_edge (entry_bb));
+
+  edge e = make_edge (entry_bb, minus_bb, EDGE_TRUE_VALUE);
+  e->probability = profile_probability::even ();
+  e = make_edge (entry_bb, call_bb, EDGE_FALSE_VALUE);
+  e->probability = profile_probability::even ();
+
+  make_single_succ_edge (minus_bb, call_bb, EDGE_FALLTHRU);
+  make_single_succ_edge (call_bb, EXIT_BLOCK_PTR_FOR_FN (cfun), 0);
+
+  /* Fill entry_bb.  */
+  gimple_stmt_iterator gsi = gsi_start_bb (entry_bb);
+  gimple *g = gimple_build_assign (u, ABSU_EXPR, i_param_decl);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (neg, LT_EXPR, i_param_decl,
+			   build_zero_cst (long_integer_type_node));
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_cond (NE_EXPR, neg, boolean_false_node,
+			 NULL_TREE, NULL_TREE);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  /* Fill minus_bb.  */
+  gsi = gsi_start_bb (minus_bb);
+  g = gimple_build_assign (build2 (MEM_REF, char_type_node, str_param_decl,
+				   char_ptr_zero),
+			   target_minus);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  /* Fill call_bb.  */
+  gsi = gsi_start_bb (call_bb);
+  g = gimple_build_assign (off, NOP_EXPR, neg);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_assign (p, POINTER_PLUS_EXPR, str_param_decl, off);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  gcall *utoa_call = gimple_build_call (utoa_fn, 2, p, u);
+  gimple_call_set_lhs (utoa_call, len);
+  gsi_insert_after (&gsi, utoa_call, GSI_NEW_STMT);
+  g = gimple_build_assign (len, PLUS_EXPR, len, off);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+  g = gimple_build_return (len);
+  gsi_insert_after (&gsi, g, GSI_NEW_STMT);
+
+  update_ssa (TODO_update_ssa);
+  free_dominance_info (CDI_DOMINATORS);
+
+  /* Update call graph.  The body is already lowered, so nothing else builds
+     the edge to __utoa.  */
+  cgraph_node::add_new_function (fn_decl, true);
+  cgraph_node::get (fn_decl)->create_edge (cgraph_node::get (utoa_fn),
+					   utoa_call, call_bb->count);
+
+  pop_cfun ();
+
+  return fn_decl;
+}
+
+#include "gt-gimple-ssa-sprintf.h"

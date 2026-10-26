@@ -6065,17 +6065,20 @@ printf_strlen_execute (function *fun, bool warn_only)
       printf ("running early inliner on %s\n", function_name (cfun));
       cgraph_edge::rebuild_edges ();
 
-      tree name = get_identifier ("__itoa");
+      /* Analyze the __utoa and __itoa functions created by the sprintf
+	 folding, whichever exist.  */
+      tree utoa_name = get_identifier ("__utoa");
+      tree itoa_name = get_identifier ("__itoa");
       cgraph_node *node;
       FOR_EACH_FUNCTION (node)
-      {
-        if (DECL_NAME (node->decl) == name)
-          break;
-      }
+	if (DECL_NAME (node->decl) == utoa_name
+	    || DECL_NAME (node->decl) == itoa_name)
+	  {
+	    if (!node->analyzed)
+	      node->analyze ();
+	    inline_analyze_function (node);
+	  }
 
-      if (!node->analyzed)
-	node->analyze ();
-      inline_analyze_function (node);
       inline_analyze_function (cgraph_node::get (fun->decl));
       ipa_free_all_node_params ();
       ipa_free_all_edge_args ();
