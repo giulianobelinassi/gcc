@@ -3189,6 +3189,7 @@ GTFILES = $(CPPLIB_H) $(srcdir)/input.h $(srcdir)/coretypes.h \
   $(srcdir)/ipa-strub.cc \
   $(srcdir)/internal-fn.h \
   $(srcdir)/calls.cc \
+  $(srcdir)/gimple-ssa-sprintf.cc \
   $(srcdir)/analyzer/analyzer-language.cc \
   @all_gtfiles@
 
