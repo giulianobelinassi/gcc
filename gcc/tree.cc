@@ -2637,6 +2637,73 @@ build_string (unsigned len, const char *str /*= NULL */)
   return s;
 }
 
+/* Given an INTEGER_CST, return a newly constructed STRING_CST node whose value
+   is the string representation of the argument in base BASE, in the target
+   (execution) character set.  Return NULL_TREE if some character of the
+   representation can't be represented there.  */
+
+tree
+build_string_in_target_charset_from_int (int base, tree num)
+{
+  gcc_assert (TREE_CODE (num) == INTEGER_CST);
+
+  char buf[WIDE_INT_PRINT_BUFFER_SIZE];
+  char *dest = buf;
+
+  wide_int value = wi::to_wide (num);
+  signop sign = TYPE_UNSIGNED (TREE_TYPE (num)) ? UNSIGNED : SIGNED;
+
+  switch (base)
+    {
+    case 10:
+      {
+	unsigned len;
+	if (print_dec_buf_size (value, sign, &len))
+	  dest = XALLOCAVEC (char, len); /* In case it is too large.  */
+	print_dec (value, dest, sign);
+	break;
+      }
+
+    /* If we wanted, we could support base 16 like this:
+    case 16:
+      print_hex (value, dest);
+      // Compensate for print_hex always prepending 0x
+      dest += strlen ("0x");
+      break;
+    */
+
+    default:
+      /* Only base 10 currently supported.  */
+      gcc_assert (false);
+    }
+
+  /* DEST is in the host character set.  Convert it to the target character set.
+     'len' from print_dec_buf_size can not be used here because it computes the
+     upper bound size of the buffer, not the length of the string.
+     FIXME:  Is there a way to check if target charset equals host?  If yes,
+     then this copy can be optimized away.  */
+  size_t len = 0;
+  for (char *p = dest; *p != '\0'; ++p)
+    {
+      *p = lang_hooks.to_target_charset (*p);
+      if (*p == 0)
+	return NULL_TREE; /* Failed conversion.  */
+      ++len;
+    }
+
+  /* Size of a C string is length + 1 to account for \0.  */
+  size_t size = len + 1;
+
+  /* Create string tree node.  */
+  tree string = build_string (size, dest);
+
+  /* Make sure it is an array type of SIZE elements.  */
+  tree const_char_type = build_qualified_type (char_type_node, TYPE_QUAL_CONST);
+  TREE_TYPE (string) = build_array_type_nelts (const_char_type, size);
+
+  return string;
+}
+
 /* Return a newly constructed COMPLEX_CST node whose value is
    specified by the real and imaginary parts REAL and IMAG.
    Both REAL and IMAG should be constant nodes.  TYPE, if specified,
@@ -16831,6 +16898,34 @@ test_predicates ()
   ASSERT_FALSE (uniform_integer_cst_p (c_f_m1));
 }
 
+/* Check that build_string_in_target_charset_from_int works correctly.  */
+
+static void
+test_build_string_in_target_charset_from_int (void)
+{
+  tree num = build_int_cst (integer_type_node, -42);
+  tree str = build_string_in_target_charset_from_int (10, num);
+  ASSERT_EQ (TREE_STRING_LENGTH (str), 4);
+  ASSERT_STREQ (TREE_STRING_POINTER (str), "-42");
+
+  num = build_int_cst (unsigned_type_node, 7);
+  str = build_string_in_target_charset_from_int (10, num);
+  ASSERT_EQ (TREE_STRING_LENGTH (str), 2);
+  ASSERT_STREQ (TREE_STRING_POINTER (str), "7");
+
+  /* A constant with more digits than fit WIDE_INT_PRINT_BUFFER_SIZE.  */
+  struct bitint_info info;
+  if (!targetm.c.bitint_type_info (1024, &info))
+    return;
+  tree type = build_bitint_type (1024, 1);
+  num = wide_int_to_tree (type, wi::max_value (1024, UNSIGNED));
+  str = build_string_in_target_charset_from_int (10, num);
+  /* 2^1024 - 1 has 309 decimal digits.  */
+  ASSERT_EQ (TREE_STRING_LENGTH (str), 310);
+  ASSERT_EQ (strncmp (TREE_STRING_POINTER (str), "179769313486", 12), 0);
+  ASSERT_EQ (strcmp (TREE_STRING_POINTER (str) + 303, "137215"), 0);
+}
+
 /* Check that string escaping works correctly.  */
 
 static void
@@ -16887,6 +16982,7 @@ tree_cc_tests ()
   test_location_wrappers ();
   test_predicates ();
   test_escaped_strings ();
+  test_build_string_in_target_charset_from_int ();
 }
 
 } // namespace selftest
