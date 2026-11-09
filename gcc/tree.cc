@@ -2638,12 +2638,11 @@ build_string (unsigned len, const char *str /*= NULL */)
 }
 
 /* Given an INTEGER_CST, return a newly constructed STRING_CST node whose value
-   is the string representation of the argument in base BASE, in the target
-   (execution) character set.  Return NULL_TREE if some character of the
-   representation can't be represented there.  */
+   is the string representation of the argument in base BASE, in the host
+   character set.  */
 
 tree
-build_string_in_target_charset_from_int (int base, tree num)
+build_string_from_int (int base, tree num)
 {
   gcc_assert (TREE_CODE (num) == INTEGER_CST);
 
@@ -2677,22 +2676,10 @@ build_string_in_target_charset_from_int (int base, tree num)
       gcc_assert (false);
     }
 
-  /* DEST is in the host character set.  Convert it to the target character set.
-     'len' from print_dec_buf_size can not be used here because it computes the
-     upper bound size of the buffer, not the length of the string.
-     FIXME:  Is there a way to check if target charset equals host?  If yes,
-     then this copy can be optimized away.  */
-  size_t len = 0;
-  for (char *p = dest; *p != '\0'; ++p)
-    {
-      *p = lang_hooks.to_target_charset (*p);
-      if (*p == 0)
-	return NULL_TREE; /* Failed conversion.  */
-      ++len;
-    }
-
-  /* Size of a C string is length + 1 to account for \0.  */
-  size_t size = len + 1;
+  /* The size of the string including the terminating nul.  The LEN computed
+     by print_dec_buf_size can't be used here because it's only an upper
+     bound on the size of the buffer, not the length of the string.  */
+  size_t size = strlen (dest) + 1;
 
   /* Create string tree node.  */
   tree string = build_string (size, dest);
@@ -16898,18 +16885,18 @@ test_predicates ()
   ASSERT_FALSE (uniform_integer_cst_p (c_f_m1));
 }
 
-/* Check that build_string_in_target_charset_from_int works correctly.  */
+/* Check that build_string_from_int works correctly.  */
 
 static void
-test_build_string_in_target_charset_from_int (void)
+test_build_string_from_int (void)
 {
   tree num = build_int_cst (integer_type_node, -42);
-  tree str = build_string_in_target_charset_from_int (10, num);
+  tree str = build_string_from_int (10, num);
   ASSERT_EQ (TREE_STRING_LENGTH (str), 4);
   ASSERT_STREQ (TREE_STRING_POINTER (str), "-42");
 
   num = build_int_cst (unsigned_type_node, 7);
-  str = build_string_in_target_charset_from_int (10, num);
+  str = build_string_from_int (10, num);
   ASSERT_EQ (TREE_STRING_LENGTH (str), 2);
   ASSERT_STREQ (TREE_STRING_POINTER (str), "7");
 
@@ -16919,7 +16906,7 @@ test_build_string_in_target_charset_from_int (void)
     return;
   tree type = build_bitint_type (1024, 1);
   num = wide_int_to_tree (type, wi::max_value (1024, UNSIGNED));
-  str = build_string_in_target_charset_from_int (10, num);
+  str = build_string_from_int (10, num);
   /* 2^1024 - 1 has 309 decimal digits.  */
   ASSERT_EQ (TREE_STRING_LENGTH (str), 310);
   ASSERT_EQ (strncmp (TREE_STRING_POINTER (str), "179769313486", 12), 0);
@@ -16982,7 +16969,7 @@ tree_cc_tests ()
   test_location_wrappers ();
   test_predicates ();
   test_escaped_strings ();
-  test_build_string_in_target_charset_from_int ();
+  test_build_string_from_int ();
 }
 
 } // namespace selftest

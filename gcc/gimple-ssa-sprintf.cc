@@ -273,6 +273,30 @@ target_to_host (char *hostr, size_t hostsz, const char *targstr)
   return hostr;
 }
 
+/* Convert the string HOSTSTR of HOSTSZ characters in the host character set
+   to the target character set, using TARGSTR as a buffer if necessary.
+   Return NULL if some character can't be represented in the execution
+   character set, HOSTSTR if TARGSTR would be equal to HOSTSTR, and TARGSTR
+   if string was copied.  */
+
+static const char *
+host_to_target (char *targstr, size_t hostsz, const char *hoststr)
+{
+  /* If the conversion would result in the same charset, return HOSTSTR itself
+     so we save a copy.  */
+  if (target_to_host_charmap['\0'] == 1)
+    return hoststr;
+
+  for (size_t i = 0; i < hostsz - 1; ++i)
+    {
+      targstr[i] = lang_hooks.to_target_charset (hoststr[i]);
+      if (!targstr[i])
+	return NULL;
+    }
+  targstr[hostsz - 1] = '\0';
+  return targstr;
+}
+
 /* Convert the sequence of decimal digits in the execution character
    starting at *PS to a HOST_WIDE_INT, analogously to strtol.  Return
    the result and set *PS to one past the last converted character.
@@ -4599,22 +4623,27 @@ try_simplify_call_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		if (!int_fits_type_p (dir.arg, dirtype))
 		  goto fail;
 
-		/* Build the string in the execution character set.  Give up
-		   if some character can't be represented in it.  */
-		tree str
-		  = build_string_in_target_charset_from_int (10, dir.arg);
-		if (!str)
-		  goto fail;
+		/* Build the string.  */
+		tree str = build_string_from_int (10, dir.arg);
 
 		/* Now TREE_STRING_LENGTH returns the SIZE of the string.  So
 		   subtract one so we have its LENGTH.  */
-		int str_len = TREE_STRING_LENGTH (str) - 1;
+		int str_size = TREE_STRING_LENGTH (str);
+		int str_len = str_size - 1;
+
+		/* The string is in the host character set.  Convert it to the
+		   execution character set.  */
+		const char *chars = host_to_target (XALLOCAVEC (char, str_size),
+						    str_size,
+						    TREE_STRING_POINTER (str));
+		/* Give up if the conversion failed.  */
+		if (!chars)
+		  goto fail;
 
 		/* Build a proper string literal (read-only, static) out of
 		   it, the same way as for the plain parts of the format
 		   string.  */
-		const char *chars = TREE_STRING_POINTER (str);
-		tree addr_str = build_string_literal (str_len + 1, chars);
+		tree addr_str = build_string_literal (str_size, chars);
 
 		/* Emit the memcpy.  */
 		len = build_int_cst (size_type_node, str_len);

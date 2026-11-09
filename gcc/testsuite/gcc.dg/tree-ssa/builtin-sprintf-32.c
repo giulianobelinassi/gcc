@@ -75,7 +75,7 @@ int f_d_ret (char *d)
 
 void f_mixed (char *d, const char *s)
 {
-  sprintf (d, "%d:%s:%u", -1, s, 2u);
+  sprintf (d, "%d:%s%u", -1, s, 2u);
 }
 
 /* { dg-final { scan-tree-dump-times "__builtin_strnlen" 1 "optimized" } } */
