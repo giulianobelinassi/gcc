@@ -1,8 +1,8 @@
 /* Verify that sprintf calls broken into sequences of memcpy calls produce
    the same output and the same return value as the library sprintf.
    -fno-printf-return-value prevents the return value from being replaced
-   by a constant computed by the sprintf pass so that the value computed
-   by the folded sequence is the one being checked.
+   by a constant computed by the sprintf optimizations so that the value
+   computed by the folded sequence is the one being checked.
    { dg-do run }
    { dg-options "-O2 -Wno-format -Wno-format-zero-length -fno-printf-return-value" } */
 
@@ -290,6 +290,9 @@ test_unhandled (int i, int w)
   TV ("[   ab]", "[%*s]", w, "ab");
   TV ("   42", "%*d", w, 42);
   TV ("   he", "%*.2s", w, "hello");
+
+  /* Handled using the itoa and utoa functions on targets that support
+     them.  */
   TV ("3", "%d", i);
   TV ("x3", "%s%d", "x", i);
   TV ("3x", "%d%s", i, "x");

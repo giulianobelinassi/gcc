@@ -87,6 +87,12 @@ along with GCC; see the file COPYING3.  If not see
 #include "vr-values.h"
 #include "tree-ssa-strlen.h"
 #include "tree-dfa.h"
+#include "varasm.h"
+
+#include "cgraph.h"
+#include "cfghooks.h"
+#include "tree-into-ssa.h"
+#include "opts.h"
 
 /* The likely worst case value of MB_LEN_MAX for the target, large enough
    for UTF-8.  Ideally, this would be obtained by a target hook if it were
@@ -106,6 +112,22 @@ namespace {
    warn_format_overflow otherwise.  */
 
 static int warn_level;
+
+/* Return the decl of the itoa (SIGN true) or utoa (SIGN false) function that
+   converts signed or unsigned integers to string at run time.  */
+
+static tree get_itoa_utoa_decl (bool sign);
+
+/* Emit the body of the itoa (SIGN true) or utoa (SIGN false) function unless
+   it has already been emitted.  */
+
+static void emit_itoa_utoa_body (bool sign);
+
+/* Emitted utoa and itoa functions in the translation unit.  Should survive
+   while the pass executes.  */
+
+static GTY(()) tree utoa_fn;
+static GTY(()) tree itoa_fn;
 
 /* The minimum, maximum, likely, and unlikely maximum number of bytes
    of output either a formatting function or an individual directive
@@ -4426,6 +4448,10 @@ try_simplify_call_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
      one.  */
   const directive &last_dir = info.directives.last ();
 
+  /* Set when the itoa or utoa function is used.  */
+  bool use_itoa = false;
+  bool use_utoa = false;
+
   /* Iterate on every found directive and "compile" into other, cheaper
      functions if possible.  */
   for (const directive &dir : info.directives)
@@ -4610,51 +4636,139 @@ try_simplify_call_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 		if (dir.prec[1] >= 0)
 		  goto fail;
 
-		/* If the parameter to %d is not known in compile time, then do
-		   not optimize it.  */
-		if (TREE_CODE (dir.arg) != INTEGER_CST)
-		  goto fail;
-
 		tree dirtype = get_type_tree_for_integer (sign, dir);
 		if (dirtype == NULL_TREE)
 		  goto fail;
 
-		/* In case the value doesn't fit, give up.  */
-		if (!int_fits_type_p (dir.arg, dirtype))
-		  goto fail;
+		if (TREE_CODE (dir.arg) == INTEGER_CST)
+		  {
+		    /* The integer is known in compilation time.  */
 
-		/* Build the string.  */
-		tree str = build_string_from_int (10, dir.arg);
+		    /* In case the value doesn't fit, give up.  */
+		    if (!int_fits_type_p (dir.arg, dirtype))
+		      goto fail;
 
-		/* Now TREE_STRING_LENGTH returns the SIZE of the string.  So
-		   subtract one so we have its LENGTH.  */
-		int str_size = TREE_STRING_LENGTH (str);
-		int str_len = str_size - 1;
+		    /* Build the string.  */
+		    tree str = build_string_from_int (10, dir.arg);
 
-		/* The string is in the host character set.  Convert it to the
-		   execution character set.  */
-		const char *chars = host_to_target (XALLOCAVEC (char, str_size),
-						    str_size,
-						    TREE_STRING_POINTER (str));
-		/* Give up if the conversion failed.  */
-		if (!chars)
-		  goto fail;
+		    /* Now TREE_STRING_LENGTH returns the SIZE of the string.  So
+		       subtract one so we have its LENGTH.  */
+		    int str_size = TREE_STRING_LENGTH (str);
+		    int str_len = str_size - 1;
 
-		/* Build a proper string literal (read-only, static) out of
-		   it, the same way as for the plain parts of the format
-		   string.  */
-		tree addr_str = build_string_literal (str_size, chars);
+		    /* The string is in the host character set.  Convert it to the
+		       execution character set.  */
+		    const char *chars = host_to_target (XALLOCAVEC (char, str_size),
+							str_size,
+							TREE_STRING_POINTER (str));
+		    /* Give up if the conversion failed.  */
+		    if (!chars)
+		      goto fail;
 
-		/* Emit the memcpy.  */
-		len = build_int_cst (size_type_node, str_len);
-		gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
-						  addr_str, len);
-		gimple_set_location (repl, loc);
-		gimple_seq_add_stmt_without_update (&stmts, repl);
+		    /* Build a proper string literal (read-only, static) out of
+		       it, the same way as for the plain parts of the format
+		       string.  */
+		    tree addr_str = build_string_literal (str_size, chars);
 
-		/* Propagate the NO_WARNING bit to avoid issuing the same
-		   warning more than once.  */
-		copy_warning (repl, stmt);
+		    /* Emit the memcpy.  */
+		    len = build_int_cst (size_type_node, str_len);
+		    gimple *repl = gimple_build_call (fn_memcpy, 3, last_head,
+						      addr_str, len);
+		    gimple_set_location (repl, loc);
+		    gimple_seq_add_stmt_without_update (&stmts, repl);
+
+		    /* Propagate the NO_WARNING bit to avoid issuing the same
+		       warning more than once.  */
+		    copy_warning (repl, stmt);
+		  }
+		else
+		  {
+		    /* The integer is not known in compilation time.  Emit a
+		       function itoa or utoa according to sign to build the
+		       string in execution time.  */
+
+		    /* We only emit itoa and utoa for targets that support
+		       mechanisms in the linker for merging duplicate
+		       symbols.  */
+		    if (!supports_one_only ())
+		      goto fail;
+
+		    /* If it requires more precision than what we support, then
+		       do not optimize.  This happens for example in platforms
+		       where longs are 32-bits and long longs are 64-bits, like
+		       32-bits x86 (which requires register concatenation for
+		       64-bits operations) or MS-Windows on x86_64.  */
+		    if (TYPE_PRECISION (dirtype)
+			> TYPE_PRECISION (long_integer_type_node))
+		      goto fail;
+
+		    /* _BitInt arguments wider than long have already been
+		       lowered by now, so we can't emit a conversion from
+		       them.  */
+		    if (TREE_CODE (argtype) == BITINT_TYPE)
+		      goto fail;
+
+		    /* itoa and utoa use long and unsigned long, so check if
+		       the parameter will fit in this datatype.  */
+		    if ((TYPE_PRECISION (argtype)
+			    > TYPE_PRECISION (long_integer_type_node)))
+		      goto fail;
+
+		    /* The functions write the digits and the sign using the
+		       characters of the string "0123456789-" in the execution
+		       character set, which is passed to them.  Give up if some
+		       character can't be represented in it.  */
+		    static const char host_digits[] = "0123456789-";
+		    const char *digits_chars
+		      = host_to_target (XALLOCAVEC (char, sizeof host_digits),
+					sizeof host_digits, host_digits);
+		    if (!digits_chars)
+		      goto fail;
+		    tree digits = build_string_literal (sizeof host_digits,
+							digits_chars);
+
+		    /* Use itoa for %d and utoa for %u.  Their bodies are only
+		       emitted once we know the whole call can be folded.  */
+		    tree fn = get_itoa_utoa_decl (sign);
+		    tree fn_arg_type = (sign ? long_integer_type_node
+					: long_unsigned_type_node);
+		    if (sign)
+		      use_itoa = true;
+		    else
+		      use_utoa = true;
+
+		    /* Do casting to the argument to the directive first to
+		       ensure truncation.  For example, for %hhd directive
+		       and an int is passed, we must cast it to char.  */
+		    tree arg;
+		    if (useless_type_conversion_p (dirtype, TREE_TYPE (dir.arg)))
+		      arg = dir.arg;
+		    else
+		      {
+			arg = make_temp_ssa_name (dirtype, NULL, "");
+			gassign *conv = gimple_build_assign (arg, NOP_EXPR,
+							     dir.arg);
+			gimple_seq_add_stmt_without_update (&stmts, conv);
+		      }
+
+		    /* Now cast it to whatever the parameter of utoa or itoa
+		       expects.  */
+		    if (!useless_type_conversion_p (fn_arg_type, dirtype))
+		      {
+			tree larg = make_temp_ssa_name (fn_arg_type, NULL, "");
+			gassign *conv = gimple_build_assign (larg, NOP_EXPR,
+							     arg);
+			gimple_seq_add_stmt_without_update (&stmts, conv);
+			arg = larg;
+		      }
+
+		    /* Emit the call to itoa or utoa.  */
+		    len = make_temp_ssa_name (size_type_node, NULL, "");
+		    gcall *repl = gimple_build_call (fn, 3, last_head, arg,
+						     digits);
+		    gimple_set_lhs (repl, len);
+		    gimple_seq_add_stmt_without_update (&stmts, repl);
+		  }
 
 		break;
 	      }
@@ -4680,6 +4794,12 @@ try_simplify_call_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
 	  last_head = new_head;
 	}
     }
+
+  /* All directives are supported.  Emit the helpers that are used.  */
+  if (use_itoa)
+    emit_itoa_utoa_body (true);
+  if (use_utoa)
+    emit_itoa_utoa_body (false);
 
   /* Compute the return value again.  */
   if (tree lhs = gimple_call_lhs (stmt))
@@ -4772,6 +4892,434 @@ get_user_idx_format (tree fndecl, unsigned *idx_args)
   /* Attribute argument indices are 1-based but we use zero-based.  */
   *idx_args = tree_to_uhwi (elliparg) - 1;
   return tree_to_uhwi (fmtarg) - 1;
+}
+
+/* Build the decl of a function NAME with signature
+   size_t NAME (char *str, VAL_TYPE val, const char *digits), as used by the
+   integer to string conversion functions below.  DIGITS is the string
+   "0123456789-" in the execution character set, which the functions use to
+   write the digits and the sign.  This way the functions don't depend on
+   the execution character set, so the copies emitted into all translation
+   units are interchangeable.  */
+
+static tree
+build_conversion_fn_decl (const char *name, tree val_type)
+{
+  /* Build and setup the function decl.  */
+  tree str_type = build_pointer_type (char_type_node);
+  tree digits_type
+    = build_pointer_type (build_qualified_type (char_type_node,
+						TYPE_QUAL_CONST));
+  tree fn_type = build_function_type_list (size_type_node, str_type,
+					   val_type, digits_type, NULL_TREE);
+  tree id = clone_identifier (get_identifier (name), "gcc_strlen");
+  tree fn_decl = build_decl (UNKNOWN_LOCATION, FUNCTION_DECL, id, fn_type);
+
+  TREE_STATIC (fn_decl) = 1;
+  TREE_USED (fn_decl) = 1;
+  DECL_ARTIFICIAL (fn_decl) = 1;
+  DECL_IGNORED_P (fn_decl) = 1;
+  DECL_DECLARED_INLINE_P (fn_decl) = 1;
+
+  /* Like the sprintf call it replaces, the function never throws.  */
+  TREE_NOTHROW (fn_decl) = 1;
+
+  DECL_VISIBILITY (fn_decl) = VISIBILITY_HIDDEN;
+  DECL_VISIBILITY_SPECIFIED (fn_decl) = 1;
+
+  /* Build parameter and result value decls and connect them to the function
+     decl tree.  */
+  tree result_decl = build_decl (UNKNOWN_LOCATION, RESULT_DECL, NULL_TREE,
+				 size_type_node);
+  DECL_ARTIFICIAL (result_decl) = 1;
+  DECL_IGNORED_P (result_decl) = 1;
+  DECL_CONTEXT (result_decl) = fn_decl;
+  DECL_RESULT (fn_decl) = result_decl;
+
+  tree str_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
+				    get_identifier ("str"), str_type);
+  DECL_ARTIFICIAL (str_param_decl) = 1;
+  DECL_NAMELESS (str_param_decl) = 1;
+  DECL_ARG_TYPE (str_param_decl) = str_type;
+  DECL_CONTEXT (str_param_decl) = fn_decl;
+  TREE_USED (str_param_decl) = 1;
+
+  tree val_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
+				    get_identifier ("val"), val_type);
+  DECL_ARTIFICIAL (val_param_decl) = 1;
+  DECL_NAMELESS (val_param_decl) = 1;
+  DECL_ARG_TYPE (val_param_decl) = val_type;
+  DECL_CONTEXT (val_param_decl) = fn_decl;
+  TREE_USED (val_param_decl) = 1;
+
+  tree digits_param_decl = build_decl (UNKNOWN_LOCATION, PARM_DECL,
+				       get_identifier ("digits"), digits_type);
+  DECL_ARTIFICIAL (digits_param_decl) = 1;
+  DECL_NAMELESS (digits_param_decl) = 1;
+  DECL_ARG_TYPE (digits_param_decl) = digits_type;
+  DECL_CONTEXT (digits_param_decl) = fn_decl;
+  TREE_USED (digits_param_decl) = 1;
+
+  DECL_CHAIN (str_param_decl) = val_param_decl;
+  DECL_CHAIN (val_param_decl) = digits_param_decl;
+  DECL_ARGUMENTS (fn_decl) = str_param_decl;
+
+  return fn_decl;
+}
+
+/* Return the decl of the itoa (SIGN true) or utoa (SIGN false) function,
+   building it if needed.  This only builds the decl.  The body is emitted
+   by emit_itoa_utoa_body.  */
+
+static tree
+get_itoa_utoa_decl (bool sign)
+{
+  tree &fn_decl = sign ? itoa_fn : utoa_fn;
+  if (fn_decl == NULL_TREE)
+    {
+      tree val_type = sign ? long_integer_type_node : long_unsigned_type_node;
+      fn_decl = build_conversion_fn_decl (sign ? "itoa" : "utoa", val_type);
+    }
+  return fn_decl;
+}
+
+/* Emit the body of the 'itoa' (SIGN true) or 'utoa' (SIGN false) function
+   for the target unless it has already been emitted.
+
+   Given an unsigned long number and a string buffer, the 'utoa' function
+   fills out the buffer with the decimal string representation of that number.
+   Analogously for 'itoa' and signed longs.  The characters are taken from
+   the DIGITS argument, "0123456789-" in the execution character set: the
+   digit D is DIGITS[D] and the minus sign is DIGITS[10].
+
+   'itoa' has an extra bb2-bb4 prologue that writes a sign and computes the
+   absolute value; bb5-bb8 are shared between both.  */
+
+static void
+emit_itoa_utoa_body (bool sign)
+{
+  tree fn_decl = get_itoa_utoa_decl (sign);
+
+  /* The body has already been emitted.  */
+  if (DECL_STRUCT_FUNCTION (fn_decl))
+    return;
+
+  /* Every translation unit using the function emits its own copy.  To avoid
+     code bloat, make sure all those copies get linked into a single
+     instance.  */
+  gcc_checking_assert (supports_one_only ());
+  /* make_decl_one_only sets TREE_PUBLIC too but we need it set before
+     computing the assembler name.  Otherwise, with LTO, the name would be
+     made unique by appending a number to it and the copies wouldn't get
+     merged.  */
+  TREE_PUBLIC (fn_decl) = 1;
+  make_decl_one_only (fn_decl, DECL_ASSEMBLER_NAME (fn_decl));
+
+  tree str_param_decl = DECL_ARGUMENTS (fn_decl);
+  tree str_type = TREE_TYPE (str_param_decl);
+  tree val_param_decl = DECL_CHAIN (str_param_decl);
+  tree digits_param_decl = DECL_CHAIN (val_param_decl);
+  tree digits_type = TREE_TYPE (digits_param_decl);
+
+  profile_count cfg_count = profile_count::uninitialized ();
+
+  /* 'init_lowered_empty_function()' changes cfun and decl to the new function.
+     We cannot simply restore them by 'pop_cfun()', thus we save them
+     manually.  */
+  struct function *saved_cfun = cfun;
+  tree saved_function_decl = current_function_decl;
+  basic_block bb = init_lowered_empty_function (fn_decl, true, cfg_count);
+
+  /* Build CFG.  bb2-bb4 only exist for itoa (SIGN true):
+
+     bb1 (ENTRY)             bb1 (ENTRY)
+      |                       |
+      |                      bb2
+      |                       t f
+      |                       | \
+      |                      bb3 |
+      |                       | /
+      |                      bb4
+      | /-\                   | /-\
+     bb5   |                 bb5   |
+      f t  |                  f t  |
+      | \-/                   | \-/
+      |                       |
+     bb6                     bb6
+      |                       |
+      | /-\                   | /-\
+     bb7   |                 bb7   |
+      f t  |                  f t  |
+      | \-/                   | \-/
+     bb8                     bb8
+      |                       |
+     bb9 (EXIT)              bb9 (EXIT)  */
+  basic_block bb2 = NULL, bb3 = NULL, bb4 = NULL, bb5;
+  if (sign)
+    {
+      bb2 = bb;
+      bb3 = split_block_after_labels (bb2)->dest;
+      bb4 = split_block_after_labels (bb3)->dest;
+      bb5 = split_block_after_labels (bb4)->dest;
+    }
+  else
+    bb5 = bb;
+  basic_block bb6 = split_block_after_labels (bb5)->dest;
+  basic_block bb7 = split_block_after_labels (bb6)->dest;
+  basic_block bb8 = split_block_after_labels (bb7)->dest;
+
+  edge e24 = NULL;
+  edge e45;
+  if (sign)
+    {
+      edge e23 = single_succ_edge (bb2);
+      e23->flags ^= EDGE_TRUE_VALUE | EDGE_FALLTHRU;
+      e24 = make_edge (bb2, bb4, EDGE_FALSE_VALUE);
+      e23->probability = profile_probability::unlikely ();
+      e24->probability = profile_probability::likely ();
+      e45 = single_succ_edge (bb4);
+    }
+  else
+    e45 = single_pred_edge (bb5);
+
+  edge e56 = single_succ_edge (bb5);
+  e56->flags ^= EDGE_FALSE_VALUE | EDGE_FALLTHRU;
+  edge e55 = make_edge (bb5, bb5, EDGE_TRUE_VALUE);
+
+  edge e78 = single_succ_edge (bb7);
+  e78->flags ^= EDGE_FALSE_VALUE | EDGE_FALLTHRU;
+  edge e77 = make_edge (bb7, bb7, EDGE_TRUE_VALUE);
+
+  /* Fill out profile information.  */
+  e55->probability = profile_probability::likely ();
+  e56->probability = profile_probability::unlikely ();
+  e77->probability = profile_probability::likely ();
+  e78->probability = profile_probability::unlikely ();
+
+  /* Fill out dominator and loop info.  */
+  calculate_dominance_info (CDI_DOMINATORS);
+  class loop *bb5_loop = alloc_loop ();
+  bb5_loop->header = bb5;
+  bb5_loop->latch = bb5;
+  add_loop (bb5_loop, bb5->loop_father);
+  class loop *bb7_loop = alloc_loop ();
+  bb7_loop->header = bb7;
+  bb7_loop->latch = bb7;
+  add_loop (bb7_loop, bb7->loop_father);
+
+  /* Insert GIMPLE statements.  */
+  gimple_stmt_iterator gsi;
+  gimple_seq seq;
+  gphi *phi_val, *phi_str;
+
+  /* str_3_1 only exists for itoa.  str_4/val_4 are set up differently by each
+     branch below, but once set, bb5/bb7/bb8 work with them the same way
+     regardless of SIGN.  */
+  tree str_3_1 = NULL_TREE;
+  tree str_4, val_4;
+  tree digits = get_or_create_ssa_default_def (cfun, digits_param_decl);
+
+  if (sign)
+    {
+      /* bb2 (sign test):
+	 if (val_2 < 0)
+	   goto <bb 3>;  [unlikely]
+	 else
+	   goto <bb 4>;  [likely]
+      */
+      gsi = gsi_start_bb (bb2);
+      tree val_2 = get_or_create_ssa_default_def (cfun, val_param_decl);
+      gcond *bb2_cond
+	= gimple_build_cond (LT_EXPR, val_2,
+			     build_zero_cst (long_integer_type_node), NULL,
+			     NULL);
+      gsi_insert_after (&gsi, bb2_cond, GSI_NEW_STMT);
+
+      /* bb3 (write sign):
+	 minus_3 = digits[10];
+	 str_3_2 = str_3_1 + 1;
+	 *str_3_1 = minus_3;
+      */
+      gsi = gsi_start_bb (bb3);
+      str_3_1 = get_or_create_ssa_default_def (cfun, str_param_decl);
+      tree minus_3 = make_ssa_name (char_type_node);
+      gassign *minus_read
+	= gimple_build_assign (minus_3,
+			       build2 (MEM_REF, char_type_node, digits,
+				       build_int_cst (digits_type, 10)));
+      gsi_insert_after (&gsi, minus_read, GSI_NEW_STMT);
+      tree str_3_2
+	= gimple_build (&gsi, false, GSI_NEW_STMT, UNKNOWN_LOCATION,
+			POINTER_PLUS_EXPR, str_type, str_3_1,
+			size_one_node);
+      gassign *minus_write
+	= gimple_build_assign (build_simple_mem_ref (str_3_1), minus_3);
+      gsi_insert_after (&gsi, minus_write, GSI_NEW_STMT);
+
+      /* bb4 (apply absolute value):
+	 # str_4 = PHI <str_3_1(bb2), str_3_2(bb3)>
+	 val_4 = ABSU_EXPR (val_2);
+      */
+      str_4 = make_ssa_name (str_param_decl);
+      phi_str = create_phi_node (str_4, bb4);
+      add_phi_arg (phi_str, str_3_1, e24, UNKNOWN_LOCATION);
+      add_phi_arg (phi_str, str_3_2, single_succ_edge (bb3), UNKNOWN_LOCATION);
+
+      gsi = gsi_start_bb (bb4);
+      val_4
+	= gimple_build (&gsi, false, GSI_NEW_STMT, UNKNOWN_LOCATION, ABSU_EXPR,
+			long_unsigned_type_node, val_2);
+    }
+  else
+    {
+      str_4 = get_or_create_ssa_default_def (cfun, str_param_decl);
+      val_4 = get_or_create_ssa_default_def (cfun, val_param_decl);
+    }
+
+  /* bb5 (count digits):
+     # str_5_1 = PHI <str_4(bb4), str_5_2(bb5)>
+     # val_5_1 = PHI <val_4(bb4), val_5_2(bb5)>
+     val_5_2 = val_5_1 / 10;
+     str_5_2 = str_5_1 + 1;
+     if (val_5_1 > 9)
+       goto <bb 5>;  [likely]
+     else
+       goto <bb 6>;  [unlikely]
+  */
+  tree str_5_1 = make_ssa_name (str_param_decl);
+  tree val_5_1 = make_ssa_name (long_unsigned_type_node);
+  phi_str = create_phi_node (str_5_1, bb5);
+  phi_val = create_phi_node (val_5_1, bb5);
+
+  /* We have to work on a gimple sequence ("freestanding" statements) instead
+     of directly on the basic block.  Since the basic block forms a loop, we'll
+     be working with statements referencing SSA names that lack definitions or
+     referencing incomplete PHIs.  Thus we want to limit the folding that the
+     'gimple_build' API does.  It shouldn't inspect these "invalid references".
+     We achieve this using gimple sequences.
+
+     FIXME According to the comment at 'gimple-fold.cc:gimple_build()', this
+     approach should work.  However, I've seen this approach fail when I built
+     slightly different gimple statements.  The gimple_build API can end up
+     calling 'tree_single_nonnegative_p()' which can end up inspecting an
+     incomplete PHI and segfaulting.  I'm making this note here for two
+     reasons: 1. To warn people taking inspiration from this code.  2. To
+     document this bug in case it starts happening on this code -- which I
+     guess is possible if there are changes to the gimple folding
+     infrastructure.  */
+  seq = NULL;
+  tree val_5_2
+    = gimple_build (&seq, TRUNC_DIV_EXPR, long_unsigned_type_node, val_5_1,
+		    build_int_cst (long_unsigned_type_node, 10));
+  tree str_5_2
+    = gimple_build (&seq, POINTER_PLUS_EXPR, str_type, str_5_1,
+		    size_one_node);
+  gcond *bb5_cond
+    = gimple_build_cond (GT_EXPR, val_5_1,
+			 build_int_cst (long_unsigned_type_node, 9), NULL,
+			 NULL);
+  gimple_seq_add_stmt (&seq, bb5_cond);
+  gsi = gsi_start_bb (bb5);
+  gsi_insert_seq_after (&gsi, seq, GSI_LAST_NEW_STMT);
+
+  add_phi_arg (phi_str, str_4, e45, UNKNOWN_LOCATION);
+  add_phi_arg (phi_str, str_5_2, e55, UNKNOWN_LOCATION);
+  add_phi_arg (phi_val, val_4, e45, UNKNOWN_LOCATION);
+  add_phi_arg (phi_val, val_5_2, e55, UNKNOWN_LOCATION);
+
+  /* bb6 (compute length):
+     len_6_1 = str_5_2 - whatever is the most recent str;
+     len_6_2 = (size_t) len_6_1;
+  */
+  gsi = gsi_start_bb (bb6);
+  tree len_6_1
+    = gimple_build (&gsi, false, GSI_NEW_STMT, UNKNOWN_LOCATION,
+		    POINTER_DIFF_EXPR, ptrdiff_type_node, str_5_2,
+		    sign ? str_3_1 : str_4);
+  tree len_6_2
+    = gimple_convert (&gsi, false, GSI_NEW_STMT, UNKNOWN_LOCATION,
+		      size_type_node, len_6_1);
+
+  /* bb7 (write digits):
+     # str_7_1 = PHI <str_5_2(bb6), str_7_2(bb7)>
+     # val_7_1 = PHI <val_4(bb6), val_7_2(bb7)>
+     val_7_2 = val_7_1 / 10;
+     val_7_3 = val_7_1 % 10;
+     digit_7_1 = digits + (sizetype) val_7_3;
+     digit_7_2 = *digit_7_1;
+     str_7_2 = str_7_1 - 1;
+     *str_7_2 = digit_7_2;
+     if (val_7_1 > 9)
+       goto <bb 7>;  [likely]
+     else
+       goto <bb 8>;  [unlikely]
+  */
+  /* Just build PHIs.  Add arguments after the gimple_build(...) API gives them
+     to us.  */
+  tree str_7_1 = make_ssa_name (str_param_decl);
+  tree val_7_1 = make_ssa_name (long_unsigned_type_node);
+  phi_str = create_phi_node (str_7_1, bb7);
+  phi_val = create_phi_node (val_7_1, bb7);
+
+  seq = NULL;
+  tree val_7_2
+    = gimple_build (&seq, TRUNC_DIV_EXPR, long_unsigned_type_node, val_7_1,
+		    build_int_cst (long_unsigned_type_node, 10));
+  tree val_7_3
+    = gimple_build (&seq, TRUNC_MOD_EXPR, long_unsigned_type_node, val_7_1,
+		    build_int_cst (long_unsigned_type_node, 10));
+  /* Build these statements without the gimple_build API, which would try
+     to fold them, since they depend on the incomplete PHI of VAL_7_1.  */
+  tree off_7 = val_7_3;
+  if (!useless_type_conversion_p (sizetype, long_unsigned_type_node))
+    {
+      off_7 = make_ssa_name (sizetype);
+      gimple_seq_add_stmt (&seq, gimple_build_assign (off_7, NOP_EXPR,
+						      val_7_3));
+    }
+  tree digit_7_1 = make_ssa_name (digits_type);
+  gimple_seq_add_stmt (&seq, gimple_build_assign (digit_7_1,
+						  POINTER_PLUS_EXPR, digits,
+						  off_7));
+  tree digit_7_2 = make_ssa_name (char_type_node);
+  gimple_seq_add_stmt (&seq,
+		       gimple_build_assign (digit_7_2,
+					    build2 (MEM_REF, char_type_node,
+						    digit_7_1,
+						    build_int_cst (digits_type,
+								   0))));
+  tree str_7_2
+    = gimple_build (&seq, POINTER_PLUS_EXPR, str_type, str_7_1, size_int (-1));
+  tree str_7_2_deref = build_simple_mem_ref (str_7_2);
+  gassign *char_write = gimple_build_assign (str_7_2_deref, digit_7_2);
+  gimple_seq_add_stmt (&seq, char_write);
+  gcond *bb7_cond
+    = gimple_build_cond (GT_EXPR, val_7_1,
+			 build_int_cst (long_unsigned_type_node, 9), NULL,
+			 NULL);
+  gimple_seq_add_stmt (&seq, bb7_cond);
+  gsi = gsi_start_bb (bb7);
+  gsi_insert_seq_after (&gsi, seq, GSI_LAST_NEW_STMT);
+
+  add_phi_arg (phi_str, str_5_2, single_succ_edge (bb6), UNKNOWN_LOCATION);
+  add_phi_arg (phi_str, str_7_2, e77, UNKNOWN_LOCATION);
+  add_phi_arg (phi_val, val_4, single_succ_edge (bb6), UNKNOWN_LOCATION);
+  add_phi_arg (phi_val, val_7_2, e77, UNKNOWN_LOCATION);
+
+  /* bb8:
+     return len_6_2;
+  */
+  gsi = gsi_start_bb (bb8);
+  greturn *return_stmt = gimple_build_return (len_6_2);
+  gsi_insert_after (&gsi, return_stmt, GSI_NEW_STMT);
+
+  /* Finish building the function body.  */
+  update_ssa (TODO_update_ssa_only_virtuals);
+  set_cfun (saved_cfun);
+  current_function_decl = saved_function_decl;
+
+  /* Update call graph.  */
+  cgraph_node::add_new_function (fn_decl, true);
 }
 
 }   /* Unnamed namespace.  */
@@ -5192,3 +5740,5 @@ handle_printf_call (gimple_stmt_iterator *gsi, pointer_query &ptr_qry)
 
   return call_removed;
 }
+
+#include "gt-gimple-ssa-sprintf.h"
