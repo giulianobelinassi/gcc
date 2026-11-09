@@ -17,33 +17,36 @@ You should have received a copy of the GNU General Public License
 along with GCC; see the file COPYING3.  If not see
 <http://www.gnu.org/licenses/>.  */
 
-/* This file implements the printf-return-value pass.  The pass does
-   two things: 1) it analyzes calls to formatted output functions like
-   sprintf looking for possible buffer overflows and calls to bounded
-   functions like snprintf for early truncation (and under the control
-   of the -Wformat-length option issues warnings), and 2) under the
-   control of the -fprintf-return-value option it folds the return
-   value of safe calls into constants, making it possible to eliminate
-   code that depends on the value of those constants.
+/* This file implements the following analyses/optimizations:
 
-   For all functions (bounded or not) the pass uses the size of the
-   destination object.  That means that it will diagnose calls to
-   snprintf not on the basis of the size specified by the function's
-   second argument but rather on the basis of the size the first
-   argument points to (if possible).  For bound-checking built-ins
-   like __builtin___snprintf_chk the pass uses the size typically
-   determined by __builtin_object_size and passed to the built-in
-   by the Glibc inline wrapper.
+   1) it analyzes calls to formatted output functions like sprintf looking for
+   possible buffer overflows and calls to bounded functions like snprintf for
+   early truncation (and under the control of the -Wformat-overflow and
+   -Wformat-truncation options issues warnings).
 
-   The pass handles all forms standard sprintf format directives,
-   including character, integer, floating point, pointer, and strings,
-   with the standard C flags, widths, and precisions.  For integers
-   and strings it computes the length of output itself.  For floating
-   point it uses MPFR to format known constants with up and down
-   rounding and uses the resulting range of output lengths.  For
-   strings it uses the length of string literals and the sizes of
-   character arrays that a character pointer may point to as a bound
-   on the longest string.  */
+   2) under the control of the -fprintf-return-value option it folds the return
+   value of safe calls into constants, making it possible to eliminate code
+   that depends on the value of those constants.
+
+   3) in some cases, it replaces calls to sprintf and similar functions with
+   simpler specialized code.
+
+   For all functions (bounded or not) the analysis in this file uses the size
+   of the destination object.  That means that it will diagnose calls to
+   snprintf not on the basis of the size specified by the function's second
+   argument but rather on the basis of the size the first argument points to
+   (if possible).  For bound-checking built-ins like __builtin___snprintf_chk
+   the analysis uses the size typically determined by __builtin_object_size and
+   passed to the built-in by the Glibc inline wrapper.
+
+   1) and 2) handle all forms of the standard sprintf format directives,
+   including character, integer, floating point, pointer, and strings, with the
+   standard C flags, widths, and precisions.  For integers and strings it
+   computes the length of output itself.  For floating point it uses MPFR to
+   format known constants with up and down rounding and uses the resulting
+   range of output lengths.  For strings it uses the length of string literals
+   and the sizes of character arrays that a character pointer may point to as a
+   bound on the longest string.  */
 
 #include "config.h"
 #include "system.h"
