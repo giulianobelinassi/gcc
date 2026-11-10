@@ -4422,6 +4422,23 @@ try_simplify_call_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
   if (!fn_strlen || !fn_memcpy)
     return false;
 
+  /* Abort optimization in case the sprintf call has more than the allowed
+     number of directives, given by --param sprintf-fold-max-directives, which
+     by default is 5, or 2 with -Os and -Oz.  The terminating '\0' counts as
+     a directive.  The default of 5 comes from the SPEC2026 omnet
+     benchmark.  */
+  size_t num_directives = info.directives.length ();
+  if (num_directives > (size_t) param_sprintf_fold_max_directives)
+    return false;
+
+  /* When optimizing for size, only fold calls whose format string consists
+     of plain strings and %s directives to avoid code growth.  With the
+     default of 2 for -Os and -Oz, that is a plain string or a single "%s".  */
+  if (optimize_function_for_size_p (cfun))
+    for (const directive &dir : info.directives)
+      if (!dir.is_plain_format () && dir.specifier != 's')
+	return false;
+
   /* Create a list of statements we will append into.  */
   gimple_seq stmts = NULL;
 
