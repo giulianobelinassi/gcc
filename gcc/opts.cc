@@ -721,6 +721,9 @@ static const struct default_options default_options_table[] =
     { OPT_LEVELS_3_PLUS, OPT__param_inline_min_speedup_, NULL, 15 },
     { OPT_LEVELS_3_PLUS, OPT__param_max_inline_insns_single_, NULL, 200 },
 
+    /* -Os and -Oz parameters.  */
+    { OPT_LEVELS_SIZE, OPT__param_sprintf_fold_max_directives_, NULL, 2 },
+
     /* -Ofast adds optimizations to -O3.  */
     { OPT_LEVELS_FAST, OPT_ffast_math, NULL, 1 },
     { OPT_LEVELS_FAST, OPT_fallow_store_data_races, NULL, 1 },
