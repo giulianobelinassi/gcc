@@ -4431,6 +4431,27 @@ try_simplify_call_sprintf (const call_info &info, gimple_stmt_iterator *gsi)
   if (!fn_strlen || !fn_memcpy)
     return false;
 
+  /* Abort optimization in case the sprintf have more than 4 directives, which
+     means 5 because the '\0' counts as 1.  This number comes from SPEC2026
+     omnet benchmark.  */
+  size_t num_directives = info.directives.length ();
+  if (num_directives > 5)
+    return false;
+
+  /* When optimizing for size, only fold calls with plain strings or a
+     single %s to avoid code growth.  */
+  if (optimize_function_for_size_p (cfun))
+    {
+      if (num_directives > 2)
+	return false;
+
+      const directive &dir = info.directives[0];
+      if (dir.is_plain_format () || dir.specifier == 's')
+	; /* Continue with optimization.  */
+      else
+	return false;
+    }
+
   /* Create a list of statements we will append into.  */
   gimple_seq stmts = NULL;
 
