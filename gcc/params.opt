@@ -1097,6 +1097,10 @@ A factor for tuning the upper bound that swing modulo scheduler uses for schedul
 Common Joined UInteger Var(param_sms_min_sc) Init(2) IntegerRange(1, 2) Param Optimization
 The minimum value of stage count that swing modulo scheduler generates.
 
+-param=sprintf-fold-max-directives=
+Common Joined UInteger Var(param_sprintf_fold_max_directives) Init(5) Param Optimization
+The maximum number of directives, including the plain parts of the format string and its terminating nul, in a call to sprintf that is replaced by simpler statements.
+
 -param=sra-max-scalarization-size-Osize=
 Common Joined UInteger Var(param_sra_max_scalarization_size_size) Param Optimization
 Maximum size, in storage units, of an aggregate which should be considered for scalarization when compiling for size.

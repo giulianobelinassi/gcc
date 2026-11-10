@@ -650,6 +650,13 @@ a percentage.
 The maximum length of a constant string for a builtin @code{strcmp} or
 @code{memcmp} call to be eligible for inlining.
 
+@paindex sprintf-fold-max-directives
+@item sprintf-fold-max-directives
+The maximum number of directives, including the plain parts of the format
+string and its terminating nul, in a call to @code{sprintf} for it to be
+replaced by simpler statements, such as calls to @code{memcpy}.  The default
+is 5, or 2 when optimizing for size with @option{-Os} or @option{-Oz}.
+
 @paindex align-threshold
 @item align-threshold
 
