@@ -1004,6 +1004,7 @@ extern bool self_promoting_args_p (const_tree);
 extern tree strip_pointer_operator (tree);
 extern tree strip_pointer_or_array_types (tree);
 extern HOST_WIDE_INT c_common_to_target_charset (HOST_WIDE_INT);
+extern const char *c_common_exec_charset_name (void);
 
 /* This is the basic parsing function.  */
 extern void c_parse_file (void);

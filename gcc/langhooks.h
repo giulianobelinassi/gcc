@@ -576,6 +576,10 @@ struct lang_hooks
      zero-extended under -fno-signed-char.  */
   HOST_WIDE_INT (*to_target_charset) (HOST_WIDE_INT);
 
+  /* Return the name of the execution character set, or NULL if it isn't
+     known.  The default is to return NULL.  */
+  const char *(*exec_charset_name) (void);
+
   /* Pointers to machine-independent attribute tables, for front ends
      using attribs.cc.  If one is NULL, it is ignored.  Respectively, a
      table of attributes specific to the language, a table of

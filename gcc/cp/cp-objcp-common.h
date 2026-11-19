@@ -166,6 +166,8 @@ static const scoped_attribute_specs *const cp_objcp_attribute_table[] =
 #define LANG_HOOKS_GET_DEBUG_TYPE cp_get_debug_type
 #undef LANG_HOOKS_TO_TARGET_CHARSET
 #define LANG_HOOKS_TO_TARGET_CHARSET c_common_to_target_charset
+#undef LANG_HOOKS_EXEC_CHARSET_NAME
+#define LANG_HOOKS_EXEC_CHARSET_NAME c_common_exec_charset_name
 #undef LANG_HOOKS_GIMPLIFY_EXPR
 #define LANG_HOOKS_GIMPLIFY_EXPR cp_gimplify_expr
 #undef LANG_HOOKS_DECL_DWARF_ATTRIBUTE

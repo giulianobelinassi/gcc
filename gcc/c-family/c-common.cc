@@ -7216,6 +7216,15 @@ c_common_to_target_charset (HOST_WIDE_INT c)
     return uc;
 }
 
+/* Implement the exec_charset_name langhook.  Return the name of the narrow
+   execution character set.  */
+
+const char *
+c_common_exec_charset_name (void)
+{
+  return cpp_get_narrow_charset_name (parse_in);
+}
+
 /* Fold an offsetof-like expression.  EXPR is a nested sequence of component
    references with an INDIRECT_REF of a constant at the bottom; much like the
    traditional rendering of offsetof as a macro.  TYPE is the desired type of

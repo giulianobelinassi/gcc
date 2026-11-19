@@ -146,6 +146,7 @@ extern const char *lhd_get_sarif_source_language (const char *);
 #define LANG_HOOKS_SIMULATE_BUILTIN_FUNCTION_DECL LANG_HOOKS_BUILTIN_FUNCTION
 #define LANG_HOOKS_EXPR_TO_DECL		lhd_expr_to_decl
 #define LANG_HOOKS_TO_TARGET_CHARSET	lhd_to_target_charset
+#define LANG_HOOKS_EXEC_CHARSET_NAME	hook_constcharptr_void_null
 #define LANG_HOOKS_INIT_TS		lhd_do_nothing
 #define LANG_HOOKS_EH_PERSONALITY	lhd_gcc_personality
 #define LANG_HOOKS_EH_RUNTIME_TYPE	lhd_pass_through_t
@@ -390,6 +391,7 @@ extern void lhd_end_section (void);
   LANG_HOOKS_TYPES_COMPATIBLE_P, \
   LANG_HOOKS_PRINT_ERROR_FUNCTION, \
   LANG_HOOKS_TO_TARGET_CHARSET, \
+  LANG_HOOKS_EXEC_CHARSET_NAME, \
   { LANG_HOOKS_ATTRIBUTE_TABLE }, \
   LANG_HOOKS_TREE_INLINING_INITIALIZER, \
   LANG_HOOKS_TREE_DUMP_INITIALIZER, \

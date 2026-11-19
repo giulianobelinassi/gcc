@@ -107,6 +107,8 @@ static const scoped_attribute_specs *const c_objc_attribute_table[] =
 #define LANG_HOOKS_REGISTER_BUILTIN_TYPE c_register_builtin_type
 #undef LANG_HOOKS_TO_TARGET_CHARSET
 #define LANG_HOOKS_TO_TARGET_CHARSET c_common_to_target_charset
+#undef LANG_HOOKS_EXEC_CHARSET_NAME
+#define LANG_HOOKS_EXEC_CHARSET_NAME c_common_exec_charset_name
 #undef LANG_HOOKS_EXPR_TO_DECL
 #define LANG_HOOKS_EXPR_TO_DECL c_expr_to_decl
 
